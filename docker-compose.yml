@@ -1,0 +1,19 @@
+services:
+  autosinin-server:
+    build: .
+    container_name: autosinin-server
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      AUTOSININ_PORT: "8080"
+      AUTOSININ_HOST: "0.0.0.0"
+      AUTOSININ_DB_PATH: "/app/data/autosinin.db"
+      AUTOSININ_SESSION_DIR: "/app/data/sessions"
+      # 填入兼容 acidify-core:1.7.0 (Lagrange V2 Sign API) 的签名服务地址，例如自建签名服务或内网节点
+      AUTOSININ_SIGN_URL: "${AUTOSININ_SIGN_URL:-}"
+      AUTOSININ_SIGN_TOKEN: "${AUTOSININ_SIGN_TOKEN:-}"
+      AUTOSININ_SCHEDULE_INTERVAL_MIN: "360"
+      AUTOSININ_SCHEDULE_ENABLED: "true"
+    volumes:
+      - ./data:/app/data
