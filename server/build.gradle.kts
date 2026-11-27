@@ -24,7 +24,6 @@ val ktorVersion = "3.1.1"
 dependencies {
     implementation(project(":protocol-core"))
 
-    implementation("org.ntqqrev:acidify-core:1.7.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.json:json:20240303")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
