@@ -72,6 +72,16 @@ export function LoginSheet({ open, initialUin = '', onClose, onSuccess }: LoginS
 
     const match = loginState.url.match(/[?&]aid=(\d+)/);
     const aid = match?.[1] || '16';
+    // sid/uin 把滑块票据绑定到本次登录挑战，缺了腾讯会判无效（WtLogin 237）
+    let sid = '';
+    let uinParam = '0';
+    try {
+      const u = new URL(loginState.url);
+      sid = u.searchParams.get('sid') || '';
+      uinParam = u.searchParams.get('uin') || '0';
+    } catch {
+      // URL 解析失败时使用默认值
+    }
     if (window.TencentCaptcha) {
       try {
         const cap = new window.TencentCaptcha(aid, async (res) => {
@@ -84,7 +94,7 @@ export function LoginSheet({ open, initialUin = '', onClose, onSuccess }: LoginS
               setError(e instanceof Error ? e.message : '提交滑块票据失败');
             }
           }
-        });
+        }, { sid, uin: uinParam });
         cap.show();
       } catch {
         // user can still click link manually
