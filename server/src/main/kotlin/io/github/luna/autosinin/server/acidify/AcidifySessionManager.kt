@@ -383,7 +383,7 @@ class AcidifySessionManager(
     }
 
     private fun resolveAndroidAppInfo(): AndroidAppInfo =
-        if (protocolMode == "android_phone") AndroidAppInfo.ANDROID_PHONE_9_3_85 else AndroidAppInfo.ANDROID_PAD_9_2_80
+        if (protocolMode == "android_phone") AndroidAppInfo.ANDROID_PHONE_9_3_85 else AndroidAppInfo.ANDROID_PAD_9_3_85
 
     companion object {
         private const val TAG = "SSO_MGR"
