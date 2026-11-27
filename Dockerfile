@@ -1,7 +1,8 @@
+# syntax=docker/dockerfile:1
 FROM node:22-alpine AS web-builder
 WORKDIR /web
 COPY web/package.json web/package-lock.json* ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci
 COPY web ./
 RUN npm run build
 
@@ -12,7 +13,7 @@ COPY gradle gradle
 COPY protocol-core protocol-core
 COPY server server
 COPY qsign-server qsign-server
-RUN chmod +x gradlew && ./gradlew :server:installDist --no-daemon
+RUN --mount=type=cache,target=/root/.gradle chmod +x gradlew && ./gradlew :server:installDist --no-daemon
 
 FROM eclipse-temurin:25-jre
 WORKDIR /app

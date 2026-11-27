@@ -41,6 +41,28 @@ data class AndroidAppInfo(
             0xf3.toByte(), 0x6e.toByte(), 0xb6.toByte(), 0x8d.toByte(),
         )
 
+        val ANDROID_PAD_9_2_80 = AndroidAppInfo(
+            os = "Android",
+            kernel = "Linux",
+            vendorOs = "android",
+            qua = "V1_AND_SQ_9.2.80_13690_YYB_D",
+            currentVersion = "9.2.80.90316290",
+            ptVersion = "9.2.80",
+            ssoVersion = 22,
+            packageName = "com.tencent.mobileqq",
+            apkSignatureMd5 = APK_SIG_MD5,
+            sdkInfo = WtLoginSdkInfo(
+                sdkBuildTime = 1757058014L,
+                sdkVersion = "6.0.0.2589",
+                miscBitMap = 150470524L,
+                subSigMap = 66560L,
+                mainSigMap = 16724722L,
+            ),
+            appId = 16,
+            subAppId = 537348332,
+            appClientVersion = 0,
+        )
+
         val ANDROID_PAD_9_3_85 = AndroidAppInfo(
             os = "Android",
             kernel = "Linux",

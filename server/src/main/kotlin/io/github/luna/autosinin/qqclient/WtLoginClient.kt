@@ -17,8 +17,6 @@ import kotlin.random.Random
 class WtLoginClient(
     private val sso: SsoClient,
 ) {
-    private val ecdh = Secp192k1Ecdh.generate()
-    private val shareKey = ecdh.keyExchange(SECP192K1_BOB_PUBKEY, hashMd5 = true)
     private val appInfo = sso.appInfo
     private val store = sso.sessionStore
     private val signClient = sso.signClient
@@ -28,17 +26,46 @@ class WtLoginClient(
         onRequireSmsCode: suspend (countryCode: String, phone: String, smsUrl: String) -> String,
     ) {
         if (store.wloginSigs.a2.isEmpty()) {
+            if (store.wloginSigs.a1.isNotEmpty() && store.wloginSigs.noPicSig.isNotEmpty()) {
+                try {
+                    ServerLog.i(TAG, "uin=${store.uin} a2 empty, trying A1 session renewal")
+                    renewWithA1()
+                    return
+                } catch (e: Exception) {
+                    ServerLog.w(TAG, "uin=${store.uin} A1 renewal failed (${e.message}), falling back to password login")
+                }
+            }
             ServerLog.i(TAG, "uin=${store.uin} session empty, starting password login")
             passwordLogin(onRequireCaptchaTicket, onRequireSmsCode)
         } else {
             try {
                 online()
             } catch (e: Exception) {
-                ServerLog.w(TAG, "uin=${store.uin} existing session login failed (${e.message}), falling back to password login")
+                ServerLog.w(TAG, "uin=${store.uin} existing session login failed (${e.message}), trying A1 renewal")
+                if (store.wloginSigs.a1.isNotEmpty() && store.wloginSigs.noPicSig.isNotEmpty()) {
+                    try {
+                        renewWithA1()
+                        return
+                    } catch (renewErr: Exception) {
+                        ServerLog.w(TAG, "uin=${store.uin} A1 renewal failed (${renewErr.message}), falling back to password login")
+                    }
+                }
                 store.clear()
                 passwordLogin(onRequireCaptchaTicket, onRequireSmsCode)
             }
         }
+    }
+
+    private suspend fun renewWithA1() {
+        val result = sendWtLogin(0x09) {
+            buildQrExchangeTlv(
+                energy = fetchEnergy(0x09),
+                debugXwid = fetchDebugXwid(0x09),
+            )
+        }
+        check(result.state == 0) { "A1 renewal failed with state=${result.state}" }
+        applyLoginSuccessTlvs(result.tlvPack)
+        online()
     }
 
     suspend fun online() {
@@ -126,8 +153,162 @@ class WtLoginClient(
         }
 
         check(result.state == 0) { "WtLogin failed with state=${result.state}" }
+        applyLoginSuccessTlvs(result.tlvPack)
+        online()
+    }
 
-        val tlv119 = result.tlvPack[0x119] ?: error("Missing tlv 0x119")
+    private suspend fun fetchEnergy(internalCmd: Int): ByteArray = withContext(Dispatchers.IO) {
+        signClient.energy(
+            uin = store.uin,
+            data = "810_${internalCmd.toString(16)}",
+            guid = store.guid.toHex(),
+            ver = appInfo.sdkInfo.sdkVersion,
+            version = appInfo.ptVersion,
+            qua = appInfo.qua,
+        )
+    }
+
+    private suspend fun fetchDebugXwid(internalCmd: Int): ByteArray = withContext(Dispatchers.IO) {
+        signClient.getDebugXwid(
+            uin = store.uin,
+            data = "810_${internalCmd.toString(16)}",
+            guid = store.guid.toHex(),
+            version = appInfo.ptVersion,
+            qua = appInfo.qua,
+        )
+    }
+
+    data class QrCodeFetchResult(
+        val qrSig: ByteArray,
+        val qrUrl: String,
+        val qrPng: ByteArray,
+    )
+
+    sealed class QrCodePollResult {
+        data object WaitingForScan : QrCodePollResult()
+        data object WaitingForConfirm : QrCodePollResult()
+        data object Expired : QrCodePollResult()
+        data object Cancelled : QrCodePollResult()
+        data class Confirmed(
+            val uin: Long,
+            val tgtgtKey: ByteArray,
+            val a1: ByteArray,
+            val noPicSig: ByteArray,
+        ) : QrCodePollResult()
+        data class Unknown(val state: Int) : QrCodePollResult()
+    }
+
+    suspend fun fetchQrCode(): QrCodeFetchResult {
+        val code2d = ByteArrayOutputStream().apply {
+            writeShortBE(0)
+            writeIntBE(appInfo.appId)
+            writeLongBE(0L)
+            write(0)
+            writeShortBE(0)
+            val tlv = TlvPackBuilder().apply {
+                writeTlv(0x16) {
+                    writeIntBE(0)
+                    writeIntBE(appInfo.appId)
+                    writeIntBE(appInfo.subAppId)
+                    write(store.guid)
+                    writeString16(appInfo.packageName)
+                    writeString16(appInfo.ptVersion)
+                    writeString16(appInfo.packageName)
+                }
+                writeTlv(0x1b) {
+                    writeIntBE(0); writeIntBE(0); writeIntBE(3); writeIntBE(4)
+                    writeIntBE(72); writeIntBE(2); writeIntBE(2); writeShortBE(0)
+                }
+                writeTlv(0x1d) {
+                    write(1)
+                    writeIntBE(appInfo.sdkInfo.mainSigMap.toInt())
+                    writeIntBE(0)
+                    write(0)
+                }
+                writeTlv(0x33, store.guid)
+                writeTlv(0x35) { writeIntBE(appInfo.ssoVersion) }
+                writeTlv(0x66) { writeIntBE(appInfo.ssoVersion) }
+                writeTlv(0xd1) {
+                    val sys = PbEdit.bytes(1, appInfo.os.toByteArray(Charsets.UTF_8)) +
+                        PbEdit.bytes(2, store.deviceName.toByteArray(Charsets.UTF_8))
+                    write(PbEdit.bytes(1, sys))
+                    write(PbEdit.bytes(4, byteArrayOf(0x30, 0x01)))
+                }
+            }.build()
+            write(tlv)
+        }.toByteArray()
+
+        val respCode2d = sendTransEmp(subCmd = 0x31, code2d = code2d)
+        val buf = ByteBuffer.wrap(respCode2d).order(ByteOrder.BIG_ENDIAN)
+        val st = buf.get().toInt() and 0xff
+        if (st != 0) {
+            error("FetchQRCode failed status=$st respHex=${respCode2d.toHex()}")
+        }
+        return runCatching {
+            val qrSig = readPrefixed16Bytes(buf)
+            val tlvPack = parseTlv(buf)
+            val d1Raw = tlvPack[0xd1] ?: error("Missing tlv 0xd1 in FetchQRCode response")
+            val qrUrl = readPbBytes(d1Raw, 2)?.toString(Charsets.UTF_8).orEmpty()
+            val qrPng = tlvPack[0x17] ?: error("Missing tlv 0x17 (QR PNG) in FetchQRCode response")
+            QrCodeFetchResult(qrSig = qrSig, qrUrl = qrUrl, qrPng = qrPng)
+        }.getOrElse { err ->
+            error("FetchQRCode parse failed (${err.javaClass.simpleName}) status=$st hex=${respCode2d.toHex()}")
+        }
+    }
+
+    suspend fun queryQrCodeState(qrSig: ByteArray): QrCodePollResult {
+        val code2d = ByteArrayOutputStream().apply {
+            writeShortBE(0)
+            writeIntBE(appInfo.appId)
+            writeShortBE(qrSig.size)
+            write(qrSig)
+            writeLongBE(0L)
+            write(0)
+            writeShortBE(0)
+            writeShortBE(0)
+        }.toByteArray()
+
+        val respCode2d = sendTransEmp(subCmd = 0x12, code2d = code2d)
+        val buf = ByteBuffer.wrap(respCode2d).order(ByteOrder.BIG_ENDIAN)
+        val state = buf.get().toInt() and 0xff
+        return when (state) {
+            0 -> {
+                buf.int // discard 4
+                val uin = buf.int.toLong() and 0xffffffffL
+                buf.int // discard 4
+                val tlvPack = parseTlv(buf)
+                val tgtgtKey = tlvPack[0x1e] ?: error("Missing tlv 0x1e in QR confirmed response")
+                val a1 = tlvPack[0x18] ?: error("Missing tlv 0x18 in QR confirmed response")
+                val noPicSig = tlvPack[0x19] ?: error("Missing tlv 0x19 in QR confirmed response")
+                QrCodePollResult.Confirmed(uin = uin, tgtgtKey = tgtgtKey, a1 = a1, noPicSig = noPicSig)
+            }
+            17 -> QrCodePollResult.Expired
+            48 -> QrCodePollResult.WaitingForScan
+            53 -> QrCodePollResult.WaitingForConfirm
+            54 -> QrCodePollResult.Cancelled
+            else -> QrCodePollResult.Unknown(state)
+        }
+    }
+
+    suspend fun completeQrLogin(confirmed: QrCodePollResult.Confirmed) {
+        store.uin = confirmed.uin
+        store.wloginSigs.tgtgtKey = confirmed.tgtgtKey
+        store.wloginSigs.a1 = confirmed.a1
+        store.wloginSigs.noPicSig = confirmed.noPicSig
+
+        val result = sendWtLogin(0x09) {
+            buildQrExchangeTlv(
+                energy = fetchEnergy(0x09),
+                debugXwid = fetchDebugXwid(0x09),
+            )
+        }
+        check(result.state == 0) { "QR WtLogin failed with state=${result.state}" }
+        applyLoginSuccessTlvs(result.tlvPack)
+        online()
+    }
+
+    private fun applyLoginSuccessTlvs(tlvPack: Map<Int, ByteArray>) {
+        val tlv119 = tlvPack[0x119] ?: error("Missing tlv 0x119")
         val internalTlv = parseTlv(TeaCipher.decrypt(tlv119, store.wloginSigs.tgtgtKey))
 
         store.wloginSigs.apply {
@@ -156,45 +337,85 @@ class WtLoginClient(
             val uid = rspNt?.let { readPbBytes(it, 1)?.toString(Charsets.UTF_8) }
             if (!uid.isNullOrEmpty()) store.uid = uid
         }
-
-        online()
     }
 
-    private suspend fun fetchEnergy(internalCmd: Int): ByteArray = withContext(Dispatchers.IO) {
-        signClient.energy(
-            uin = store.uin,
-            data = "810_${internalCmd.toString(16)}",
-            guid = store.guid.toHex(),
-            ver = appInfo.sdkInfo.sdkVersion,
-            version = appInfo.ptVersion,
-            qua = appInfo.qua,
-        )
+    private suspend fun sendTransEmp(subCmd: Int, code2d: ByteArray): ByteArray {
+        val code2dBuf = ByteArrayOutputStream().apply {
+            writeIntBE((System.currentTimeMillis() / 1000L).toInt())
+            write(2)
+            writeShortBE(43 + code2d.size + 1)
+            writeShortBE(subCmd)
+            write(ByteArray(21))
+            write(3)
+            writeShortBE(0)
+            writeShortBE(50)
+            writeIntBE(0)
+            writeLongBE(0L)
+            write(code2d)
+            write(3)
+        }.toByteArray()
+
+        val wtPayload = ByteArrayOutputStream().apply {
+            write(0)
+            writeShortBE(code2dBuf.size)
+            writeIntBE(appInfo.appId)
+            writeIntBE(114)
+            writeShortBE(0)
+            write(0)
+            write(code2dBuf)
+        }.toByteArray()
+
+        val resp = sendRawWtLoginPacket(wtLoginSubCmd = 2066, wtPayload = wtPayload, command = "wtlogin.trans_emp")
+        val dec = TeaCipher.decrypt(resp.raw.copyOfRange(16, resp.raw.size - 1), resp.shareKey)
+        require(dec.size > 54) { "Invalid trans_emp response len=${dec.size}" }
+        return dec.copyOfRange(54, dec.size)
     }
 
-    private suspend fun fetchDebugXwid(internalCmd: Int): ByteArray = withContext(Dispatchers.IO) {
-        signClient.getDebugXwid(
-            uin = store.uin,
-            data = "810_${internalCmd.toString(16)}",
-            guid = store.guid.toHex(),
-            version = appInfo.ptVersion,
-            qua = appInfo.qua,
-        )
+    private fun buildQrExchangeTlv(energy: ByteArray, debugXwid: ByteArray): ByteArray {
+        val tlv = TlvPackBuilder()
+        tlv.tlv18()
+        tlv.tlv1()
+        tlv.writeTlv(0x106, store.wloginSigs.a1)
+        tlv.tlv116()
+        tlv.tlv100()
+        tlv.tlv107()
+        tlv.tlv142()
+        tlv.tlv144Report()
+        tlv.tlv145()
+        tlv.tlv147()
+        tlv.tlv154()
+        tlv.tlv141()
+        tlv.tlv8()
+        tlv.tlv511()
+        tlv.tlv187()
+        tlv.tlv188()
+        tlv.tlv191(0x82)
+        tlv.tlv177()
+        tlv.tlv516()
+        tlv.tlv521()
+        tlv.tlv525()
+        tlv.writeTlv(0x16a, store.wloginSigs.noPicSig)
+        tlv.writeTlv(0x544, energy)
+        tlv.writeTlv(0x545, store.qimei.toByteArray(Charsets.UTF_8))
+        tlv.writeTlv(0x548, generateTlv548())
+        tlv.writeTlv(0x553, debugXwid)
+        return tlv.build()
     }
 
     private data class LoginResp(val state: Int, val tlvPack: Map<Int, ByteArray>)
 
-    private suspend fun sendWtLogin(internalCmd: Int, buildTlv: suspend () -> ByteArray): LoginResp {
-        val tlvBytes = buildTlv()
-        val wtPayload = ByteBuffer.allocate(2 + tlvBytes.size).order(ByteOrder.BIG_ENDIAN)
-            .putShort(internalCmd.toShort())
-            .put(tlvBytes)
-            .array()
+    private data class WtRawResp(val raw: ByteArray, val shareKey: ByteArray, val randomKey: ByteArray)
+
+    private suspend fun sendRawWtLoginPacket(wtLoginSubCmd: Int, wtPayload: ByteArray, command: String): WtRawResp {
+        val ecdh = Secp192k1Ecdh.generate()
+        val shareKey = ecdh.keyExchange(SECP192K1_BOB_PUBKEY, hashMd5 = true)
         val encrypted = TeaCipher.encrypt(wtPayload, shareKey)
         val pubKey = ecdh.packPublic(compressed = true)
 
+        val randomKey = Random.nextBytes(16)
         val inner = ByteArrayOutputStream().apply {
             writeShortBE(8001)
-            writeShortBE(2064) // wtlogin.login
+            writeShortBE(wtLoginSubCmd)
             writeShortBE(0) // sequence
             writeIntBE(store.uin.toInt())
             write(3) // extVer
@@ -206,7 +427,7 @@ class WtLoginClient(
             writeIntBE(0) // retryTime
             write(1)
             write(1)
-            write(Random.nextBytes(16))
+            write(randomKey)
             writeShortBE(0x102)
             writeShortBE(pubKey.size)
             write(pubKey)
@@ -222,18 +443,33 @@ class WtLoginClient(
             .array()
 
         val rsp = sso.sendPacket(
-            command = "wtlogin.login",
+            command = command,
             payload = packet,
             requestType = RequestType.D2Auth,
             encryptType = EncryptType.WithEmptyKey,
         )
-        check(rsp.retCode == 0) { "wtlogin.login SSO retCode=${rsp.retCode}: ${rsp.extra}" }
+        check(rsp.retCode == 0) { "$command SSO retCode=${rsp.retCode}: ${rsp.extra}" }
 
         val raw = rsp.response
         require(raw.size > 17 && raw[0] == 0x02.toByte() && raw.last() == 0x03.toByte()) {
             "Invalid wtlogin response frame (len=${raw.size})"
         }
-        val dec = TeaCipher.decrypt(raw.copyOfRange(16, raw.size - 1), shareKey)
+        return WtRawResp(raw = raw, shareKey = shareKey, randomKey = randomKey)
+    }
+
+    private suspend fun sendWtLogin(internalCmd: Int, buildTlv: suspend () -> ByteArray): LoginResp {
+        val tlvBytes = buildTlv()
+        val wtPayload = ByteBuffer.allocate(2 + tlvBytes.size).order(ByteOrder.BIG_ENDIAN)
+            .putShort(internalCmd.toShort())
+            .put(tlvBytes)
+            .array()
+        val resp = sendRawWtLoginPacket(wtLoginSubCmd = 2064, wtPayload = wtPayload, command = "wtlogin.login")
+        val raw = resp.raw
+        var dec = TeaCipher.decrypt(raw.copyOfRange(16, raw.size - 1), resp.shareKey)
+        if (dec.isEmpty()) {
+            dec = TeaCipher.decrypt(raw.copyOfRange(16, raw.size - 1), resp.randomKey)
+            ServerLog.w(TAG, "wtlogin shareKey decrypt empty; randomKey decLen=${dec.size} decHex=${dec.toHex()} rawHex=${raw.toHex()}")
+        }
         return runCatching {
             val buf = ByteBuffer.wrap(dec).order(ByteOrder.BIG_ENDIAN)
             buf.short // command
@@ -246,7 +482,9 @@ class WtLoginClient(
                 val tag = if (r.remaining() >= 2) readPrefixed16Str(r) else ""
                 val msg = if (r.remaining() >= 2) readPrefixed16Str(r) else ""
                 if (code != 160) {
-                    error("WtLogin error code=$code ($tag): $msg")
+                    val url543 = if (code == 237) extract543Url(tlvPack[0x543]) else ""
+                    val suffix = if (url543.isNotEmpty()) " (验证链接: $url543)" else ""
+                    error("WtLogin error code=$code ($tag): $msg$suffix")
                 }
             }
             LoginResp(state, tlvPack)
@@ -270,9 +508,9 @@ class WtLoginClient(
         val devInfo = ByteArrayOutputStream().apply {
             write(PbEdit.bytes(1, store.deviceName.toByteArray(Charsets.UTF_8)))
             write(PbEdit.bytes(2, "muyu".toByteArray(Charsets.UTF_8)))
-            write(PbEdit.bytes(3, "17".toByteArray(Charsets.UTF_8)))
+            write(PbEdit.bytes(3, "14".toByteArray(Charsets.UTF_8)))
             write(PbEdit.bytes(4, "Xiaomi".toByteArray(Charsets.UTF_8)))
-            write(PbEdit.bytes(5, "OS4.0.4.0.XOYCNXM".toByteArray(Charsets.UTF_8)))
+            write(PbEdit.bytes(5, "V816.0.6.0.TKHCNXM".toByteArray(Charsets.UTF_8)))
         }.toByteArray()
         val bizInfo = ByteArrayOutputStream().apply {
             write(PbEdit.varintField(1, 1L))
@@ -501,7 +739,7 @@ class WtLoginClient(
                 writeTlv(0x52d, buildDeviceReport())
                 writeTlv(0x124) {
                     writeString16("android")
-                    writeString16("17")
+                    writeString16("14")
                     writeShortBE(2)
                     writeString16("")
                     writeIntBE(4)
@@ -578,15 +816,15 @@ class WtLoginClient(
     }
 
     private fun buildDeviceReport(): ByteArray = ByteArrayOutputStream().apply {
-        write(PbEdit.bytes(1, "OS4.0.4.0.XOYCNXM".toByteArray(Charsets.UTF_8)))
-        write(PbEdit.bytes(2, "Linux version 6.1.75-android17".toByteArray(Charsets.UTF_8)))
+        write(PbEdit.bytes(1, "V816.0.6.0.TKHCNXM".toByteArray(Charsets.UTF_8)))
+        write(PbEdit.bytes(2, "Linux version 5.10.198-android14".toByteArray(Charsets.UTF_8)))
         write(PbEdit.bytes(3, "REL".toByteArray(Charsets.UTF_8)))
-        write(PbEdit.bytes(4, "OS4.0.4.0.XOYCNXM".toByteArray(Charsets.UTF_8)))
-        write(PbEdit.bytes(5, "Xiaomi/muyu/muyu:17/CP2A.260605.016/OS4.0.4.0.XOYCNXM:user/release-keys".toByteArray(Charsets.UTF_8)))
+        write(PbEdit.bytes(4, "V816.0.6.0.TKHCNXM".toByteArray(Charsets.UTF_8)))
+        write(PbEdit.bytes(5, "Xiaomi/24091RPADC/muyu:14/UKQ1.230917.001/V816.0.6.0.TKHCNXM:user/release-keys".toByteArray(Charsets.UTF_8)))
         write(PbEdit.bytes(6, "unknown".toByteArray(Charsets.UTF_8)))
         write(PbEdit.bytes(7, store.androidId.toByteArray(Charsets.UTF_8)))
         write(PbEdit.bytes(8, ByteArray(0)))
-        write(PbEdit.bytes(9, "OS4.0.4.0.XOYCNXM".toByteArray(Charsets.UTF_8)))
+        write(PbEdit.bytes(9, "V816.0.6.0.TKHCNXM".toByteArray(Charsets.UTF_8)))
     }.toByteArray()
 
     companion object {
@@ -696,6 +934,35 @@ class WtLoginClient(
         }
 
         private fun md5(data: ByteArray): ByteArray = MessageDigest.getInstance("MD5").digest(data)
+
+        private fun extract543Url(raw543: ByteArray?): String {
+            if (raw543 == null || raw543.isEmpty()) return ""
+            val buttonInfo = readPbBytes(raw543, 1) ?: return ""
+            var idx = 0
+            while (idx < buttonInfo.size) {
+                val (tag, nextIdx) = readVarint(buttonInfo, idx)
+                idx = nextIdx
+                val field = (tag ushr 3).toInt()
+                val wire = (tag and 0x07).toInt()
+                when (wire) {
+                    0 -> idx = readVarint(buttonInfo, idx).second
+                    1 -> idx += 8
+                    2 -> {
+                        val (len, afterLen) = readVarint(buttonInfo, idx)
+                        val end = afterLen + len.toInt()
+                        if (field == 4 && end <= buttonInfo.size) {
+                            val action = buttonInfo.copyOfRange(afterLen, end)
+                            val url = readPbBytes(action, 3)?.toString(Charsets.UTF_8).orEmpty()
+                            if (url.isNotEmpty()) return url
+                        }
+                        idx = end
+                    }
+                    5 -> idx += 4
+                    else -> break
+                }
+            }
+            return ""
+        }
 
         private fun readPbBytes(bytes: ByteArray, targetField: Int): ByteArray? {
             var idx = 0

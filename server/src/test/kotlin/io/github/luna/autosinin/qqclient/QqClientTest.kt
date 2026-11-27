@@ -27,6 +27,15 @@ class QqClientTest {
         assertTrue(pub[0] == 0x02.toByte() || pub[0] == 0x03.toByte())
         val shared = alice.keyExchange(bobPub, hashMd5 = true)
         assertEquals(16, shared.size)
+
+        val bob = Secp192k1Ecdh.generate()
+        val s1 = alice.keyExchange(bob.packPublic(compressed = true), hashMd5 = true)
+        val s2 = bob.keyExchange(alice.packPublic(compressed = true), hashMd5 = true)
+        assertArrayEquals(s1, s2)
+
+        val fixed = Secp192k1Ecdh.fromSecret(java.math.BigInteger.valueOf(123456789L))
+        assertEquals("0310785e2ba3e4453f312451310318975bcabca3f09a7bbf62", fixed.packPublic(true).toHex())
+        assertEquals("d5767a45884663207cd2d813741e5c1d", fixed.keyExchange(bobPub, true).toHex())
     }
 
     @Test

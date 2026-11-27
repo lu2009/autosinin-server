@@ -448,6 +448,7 @@ class SsoClient(
             "trpc.commercial.dataworks.UserActionReport_sso.SsoReport",
             "trpc.lplan.feed_svr.StatusWrite.SsoPostStatus",
             "wtlogin.login",
+            "wtlogin.trans_emp",
             "wtlogin.exchange_emp",
             "wtlogin.device_lock",
         )

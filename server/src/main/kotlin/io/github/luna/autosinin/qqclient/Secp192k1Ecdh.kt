@@ -31,7 +31,7 @@ internal class Secp192k1Ecdh private constructor(
         val shared = scalarMul(secret, bobPoint)
         val xBytes = toFixedBytes(shared.x, 24)
         return if (hashMd5) {
-            MessageDigest.getInstance("MD5").digest(xBytes.copyOfRange(0, 16))
+            MessageDigest.getInstance("MD5").digest(xBytes)
         } else {
             xBytes
         }
@@ -58,6 +58,8 @@ internal class Secp192k1Ecdh private constructor(
             val pub = scalarMul(k, G)
             return Secp192k1Ecdh(k, pub)
         }
+
+        internal fun fromSecret(k: BigInteger): Secp192k1Ecdh = Secp192k1Ecdh(k, scalarMul(k, G))
 
         private fun unpackPublic(bytes: ByteArray): Point {
             require(bytes.isNotEmpty()) { "Empty public key" }

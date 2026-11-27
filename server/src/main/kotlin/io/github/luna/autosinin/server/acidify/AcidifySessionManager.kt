@@ -13,11 +13,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -112,13 +115,92 @@ class AcidifySessionManager(
     }
 
     fun startQrLogin(
-        @Suppress("unused") signUrlOverride: String? = null,
+        signUrlOverride: String? = null,
         @Suppress("unused") signTokenOverride: String? = null,
-    ): QrLoginStateDto = QrLoginStateDto(
-        qrId = "",
-        status = "ERROR",
-        error = "当前已切换为纯自研 Android SSO 客户端，请使用 Android Pad 账密登录",
-    )
+    ): QrLoginStateDto {
+        val signUrl = signUrlOverride?.takeIf { it.isNotBlank() } ?: defaultSignUrl
+        if (signUrl.isBlank()) {
+            return QrLoginStateDto(qrId = "", status = "ERROR", error = "未配置 AUTOSININ_SIGN_URL")
+        }
+        val qrId = "qr-${UUID.randomUUID().toString().take(8)}"
+        val initial = QrLoginStateDto(qrId = qrId, status = "LOGGING_IN")
+        qrSessions[qrId] = initial
+
+        val store = AndroidSessionStore.empty(0L, "", REAL_ANDROID_ID, REAL_DEVICE_NAME)
+        val sso = buildSsoClient("0", store, signUrl)
+        val wt = WtLoginClient(sso)
+
+        scope.launch {
+            runCatching {
+                val qr = wt.fetchQrCode()
+                val pngB64 = Base64.getEncoder().encodeToString(qr.qrPng)
+                qrSessions[qrId] = QrLoginStateDto(
+                    qrId = qrId,
+                    status = "WAITING_FOR_SCAN",
+                    url = qr.qrUrl,
+                    pngBase64 = pngB64,
+                )
+                ServerLog.i(TAG, "qrId=$qrId QR fetched url=${qr.qrUrl}")
+
+                var confirmed: WtLoginClient.QrCodePollResult.Confirmed? = null
+                repeat(60) {
+                    delay(2000L)
+                    when (val poll = wt.queryQrCodeState(qr.qrSig)) {
+                        is WtLoginClient.QrCodePollResult.Confirmed -> {
+                            confirmed = poll
+                            return@repeat
+                        }
+                        WtLoginClient.QrCodePollResult.WaitingForScan -> {
+                            qrSessions[qrId] = QrLoginStateDto(
+                                qrId = qrId,
+                                status = "WAITING_FOR_SCAN",
+                                url = qr.qrUrl,
+                                pngBase64 = pngB64,
+                            )
+                        }
+                        WtLoginClient.QrCodePollResult.WaitingForConfirm -> {
+                            qrSessions[qrId] = QrLoginStateDto(
+                                qrId = qrId,
+                                status = "WAITING_FOR_CONFIRMATION",
+                                url = qr.qrUrl,
+                                pngBase64 = pngB64,
+                            )
+                        }
+                        WtLoginClient.QrCodePollResult.Expired -> {
+                            qrSessions[qrId] = QrLoginStateDto(qrId = qrId, status = "EXPIRED", error = "二维码已过期")
+                            sso.close()
+                            return@launch
+                        }
+                        WtLoginClient.QrCodePollResult.Cancelled -> {
+                            qrSessions[qrId] = QrLoginStateDto(qrId = qrId, status = "CANCELLED", error = "用户取消扫码")
+                            sso.close()
+                            return@launch
+                        }
+                        is WtLoginClient.QrCodePollResult.Unknown -> Unit
+                    }
+                }
+
+                val res = confirmed ?: error("二维码轮询超时")
+                wt.completeQrLogin(res)
+                val uinStr = res.uin.toString()
+                clients[uinStr]?.close()
+                clients[uinStr] = sso
+                saveAndroidSession(uinStr, store)
+                ledger.upsertAccount(AccountInfo(uin = uinStr, nickname = uinStr, enabled = true))
+                qrSessions[qrId] = QrLoginStateDto(qrId = qrId, status = "LOGGED_IN", uin = uinStr)
+                ServerLog.i(TAG, "uin=$uinStr android QR login succeeded")
+            }.onFailure { err ->
+                sso.close()
+                ServerLog.w(TAG, "qrId=$qrId android QR login failed: ${err.message}")
+                qrSessions[qrId] = QrLoginStateDto(
+                    qrId = qrId,
+                    status = "ERROR",
+                    error = "${err.javaClass.simpleName}: ${err.message}",
+                )
+            }
+        }
+        return initial
+    }
 
     /** 发起一次 Android 协议账密登录（配合自建 :qsign-server），支持异步滑块/短信验证。 */
     fun startAndroidLogin(uin: Long, password: String, signUrlOverride: String? = null): QrLoginStateDto {
@@ -131,7 +213,7 @@ class AcidifySessionManager(
         val initial = QrLoginStateDto(qrId = loginId, status = "LOGGING_IN", uin = uinStr)
         qrSessions[loginId] = initial
 
-        val store = AndroidSessionStore.empty(uin, password, REAL_ANDROID_ID, REAL_DEVICE_NAME)
+        val store = loadOrCreateStoreWithStableDevice(uin, password)
         val sso = buildSsoClient(uinStr, store, signUrl)
         val wt = WtLoginClient(sso)
 
@@ -226,8 +308,72 @@ class AcidifySessionManager(
     }
 
     private fun saveAndroidSession(uin: String, store: AndroidSessionStore) {
+        sessionDir.mkdirs()
         val file = File(sessionDir, "$uin.android.session.json")
         file.writeText(store.toJson(), Charsets.UTF_8)
+        saveDeviceProfile(uin, store)
+    }
+
+    @Serializable
+    private data class DeviceProfile(
+        val guidHex: String,
+        val androidId: String,
+        val qimei: String,
+        val deviceName: String,
+    )
+
+    private fun deviceDir(): File = File(sessionDir.parentFile ?: File("data"), "devices")
+
+    private fun saveDeviceProfile(uin: String, store: AndroidSessionStore) {
+        runCatching {
+            val dir = deviceDir().apply { mkdirs() }
+            val profile = DeviceProfile(
+                guidHex = store.guid.joinToString("") { "%02x".format(it) },
+                androidId = store.androidId,
+                qimei = store.qimei,
+                deviceName = store.deviceName,
+            )
+            File(dir, "$uin.device.json").writeText(DEVICE_JSON.encodeToString(DeviceProfile.serializer(), profile), Charsets.UTF_8)
+        }
+    }
+
+    private fun loadOrCreateStoreWithStableDevice(uin: Long, password: String): AndroidSessionStore {
+        val uinStr = uin.toString()
+        val sessionFile = File(sessionDir, "$uinStr.android.session.json")
+        if (sessionFile.isFile) {
+            runCatching {
+                val existing = AndroidSessionStore.fromJson(sessionFile.readText(Charsets.UTF_8)).apply {
+                    this.uin = uin
+                    this.password = password
+                    if (this.deviceName.startsWith("Lagrange-") || this.deviceName == "22041211AC") {
+                        this.deviceName = REAL_DEVICE_NAME
+                    }
+                    this.state = AndroidSessionStore.State()
+                }
+                saveDeviceProfile(uinStr, existing)
+                return existing
+            }
+        }
+        val devFile = File(deviceDir(), "$uinStr.device.json")
+        if (devFile.isFile) {
+            runCatching {
+                val prof = DEVICE_JSON.decodeFromString(DeviceProfile.serializer(), devFile.readText(Charsets.UTF_8))
+                val guidBytes = prof.guidHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                if (guidBytes.size == 16) {
+                    return AndroidSessionStore(
+                        uin = uin,
+                        password = password,
+                        guid = guidBytes,
+                        androidId = prof.androidId,
+                        qimei = prof.qimei,
+                        deviceName = prof.deviceName,
+                    )
+                }
+            }
+        }
+        val fresh = AndroidSessionStore.empty(uin, password, REAL_ANDROID_ID, REAL_DEVICE_NAME)
+        saveDeviceProfile(uinStr, fresh)
+        return fresh
     }
 
     fun shutdown() {
@@ -237,11 +383,12 @@ class AcidifySessionManager(
     }
 
     private fun resolveAndroidAppInfo(): AndroidAppInfo =
-        if (protocolMode == "android_phone") AndroidAppInfo.ANDROID_PHONE_9_3_85 else AndroidAppInfo.ANDROID_PAD_9_3_85
+        if (protocolMode == "android_phone") AndroidAppInfo.ANDROID_PHONE_9_3_85 else AndroidAppInfo.ANDROID_PAD_9_2_80
 
     companion object {
         private const val TAG = "SSO_MGR"
         private const val REAL_ANDROID_ID = "82925c0e28a82a89"
         private const val REAL_DEVICE_NAME = "24091RPADC"
+        private val DEVICE_JSON = Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = true }
     }
 }
