@@ -321,6 +321,8 @@ class AcidifySessionManager(
         val androidId: String,
         val qimei: String,
         val deviceName: String,
+        // 完整设备档案；旧文件没有该字段时按默认（真机 rubens）补齐
+        val device: DeviceProfile = DeviceProfile(),
     )
 
     private fun deviceDir(): File = File(sessionDir.parentFile ?: File("data"), "devices")
@@ -333,6 +335,7 @@ class AcidifySessionManager(
                 androidId = store.androidId,
                 qimei = store.qimei,
                 deviceName = store.deviceName,
+                device = store.device,
             )
             File(dir, "$uin.device.json").writeText(DEVICE_JSON.encodeToString(StoredDeviceProfile.serializer(), profile), Charsets.UTF_8)
         }
@@ -368,6 +371,7 @@ class AcidifySessionManager(
                         androidId = prof.androidId,
                         qimei = prof.qimei,
                         deviceName = prof.deviceName,
+                        device = prof.device,
                     )
                 }
             }
