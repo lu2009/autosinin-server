@@ -31,6 +31,25 @@ class PublishTask(private val transport: ProtoTransport) {
         return Result(ok, if (ok) "公开说说发布已受理 ${r.detail}" else "说说发布失败 ${r.detail}")
     }
 
+    fun publishBlindBox(uin: String, seq: Int = 5): Result {
+        val nowMs = System.currentTimeMillis()
+        val trace = "${uin}_${nowMs}_${(1000..9999).random()}"
+        val uuid = UUID.randomUUID().toString()
+        val body = PublishReplay.buildPublicBlindBox(
+            PublishReplay.Params(
+                uin = uin,
+                trace = trace,
+                uuid = uuid,
+                ts = nowMs / 1000L,
+                seq = seq,
+            ),
+        )
+        val r = transport.sendPbRaw(uin, PublishReplay.CMD, body, trace)
+        ServerLog.i(TAG, "uin=$uin publishBlindBox ${r.detail}")
+        val ok = r.code == 0 || (r.bytes?.isNotEmpty() == true)
+        return Result(ok, if (ok) "盲盒签发布已受理 ${r.detail}" else "盲盒签发布失败 ${r.detail}")
+    }
+
     companion object {
         private const val TAG = "PUBLISH"
     }

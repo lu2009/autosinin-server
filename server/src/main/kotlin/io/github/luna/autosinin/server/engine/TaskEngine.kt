@@ -1,14 +1,19 @@
 package io.github.luna.autosinin.server.engine
 
+import io.github.luna.autosinin.protocol.AddFriendTask
 import io.github.luna.autosinin.protocol.DailySignCards
 import io.github.luna.autosinin.protocol.DramaSso
+import io.github.luna.autosinin.protocol.FarmGateway
 import io.github.luna.autosinin.protocol.FeedReadTask
+import io.github.luna.autosinin.protocol.MiniAppCode
 import io.github.luna.autosinin.protocol.MiniGameAdFetcher
 import io.github.luna.autosinin.protocol.MiniGameArena
 import io.github.luna.autosinin.protocol.MiniGameProtocolSession
 import io.github.luna.autosinin.protocol.MiniGameStatus
 import io.github.luna.autosinin.protocol.NovelSession
 import io.github.luna.autosinin.protocol.PublishTask
+import io.github.luna.autosinin.protocol.TaskPageAction
+import io.github.luna.autosinin.protocol.VideoAdTask
 import io.github.luna.autosinin.protocol.VipSign
 import io.github.luna.autosinin.protocol.VisitReport
 import io.github.luna.autosinin.protocol.WelfareClaim
@@ -35,6 +40,7 @@ class TaskEngine(
     private val ledger: AccountLedger,
     private val transport: ProtoTransport,
     private val tickets: TicketProvider,
+    friendOperator: AddFriendTask.FriendOperator = AddFriendTask.FriendOperator.NOOP,
 ) {
     val miniGameStatus = MiniGameStatus(transport)
     val dramaSso = DramaSso(transport)
@@ -48,6 +54,10 @@ class TaskEngine(
     val miniGameAdFetcher = MiniGameAdFetcher(transport)
     val publishTask = PublishTask(transport)
     val novelSession = NovelSession(transport)
+    val miniAppCode = MiniAppCode(transport)
+    val farmGateway = FarmGateway()
+    val videoAdTask = VideoAdTask(transport)
+    val addFriendTask = AddFriendTask(transport, friendOperator)
 
     fun runAllEnabled(tasksFilter: Set<String>? = null, force: Boolean = false): List<TaskExecutionResult> {
         val accounts = ledger.listAccounts(onlyEnabled = true)
@@ -194,6 +204,27 @@ class TaskEngine(
                 val r = publishTask.publishMood(uin)
                 Triple(r.ok, false, r.detail)
             }
+            "publish_blind_box" -> {
+                val r = publishTask.publishBlindBox(uin)
+                Triple(r.ok, false, r.detail)
+            }
+            "farm_login" -> {
+                val code = miniAppCode.fetch(uin, MiniAppCode.DEFAULT_FARM_APPID)
+                if (code.isNullOrBlank()) {
+                    Triple(false, false, "获取农场小程序 code 失败")
+                } else {
+                    val r = farmGateway.login(code)
+                    Triple(r.ok, false, r.detail)
+                }
+            }
+            "video_ad" -> {
+                val r = videoAdTask.run(uin)
+                Triple(r.ok, r.pending, r.detail)
+            }
+            "add_friend" -> {
+                val r = addFriendTask.run(uin)
+                Triple(r.ok, r.pending, r.detail)
+            }
             "feed_read" -> {
                 val r = feedReadTask.run(uin)
                 Triple(r.ok, r.pending, r.detail)
@@ -223,10 +254,14 @@ class TaskEngine(
             "welfare_claim",
             "drama",
             "publish_mood",
+            "publish_blind_box",
             "feed_read",
             "novel_read",
             "minigame_arena",
             "minigame_trial",
+            "farm_login",
+            "video_ad",
+            "add_friend",
         )
         val TASK_ID_MAP = mapOf(
             "welfare_claim" to 1024,
@@ -237,6 +272,7 @@ class TaskEngine(
             "novel_read" to 1029,
             "minigame_arena" to 1045,
             "minigame_trial" to 1036,
+            "video_ad" to 1021,
         )
     }
 }

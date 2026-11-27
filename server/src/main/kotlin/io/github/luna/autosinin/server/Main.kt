@@ -1,5 +1,6 @@
 package io.github.luna.autosinin.server
 
+import io.github.luna.autosinin.server.acidify.AcidifyFriendOperator
 import io.github.luna.autosinin.server.acidify.AcidifySessionManager
 import io.github.luna.autosinin.server.acidify.AcidifyTicketProvider
 import io.github.luna.autosinin.server.acidify.AcidifyTransport
@@ -21,6 +22,7 @@ fun main() {
     val signUrl = System.getenv("AUTOSININ_SIGN_URL")?.trim().orEmpty()
     val signToken = System.getenv("AUTOSININ_SIGN_TOKEN")?.trim().orEmpty()
     val httpProxy = System.getenv("AUTOSININ_HTTP_PROXY")?.trim().orEmpty()
+    val protocolMode = System.getenv("AUTOSININ_PROTOCOL_MODE")?.trim()?.lowercase() ?: "android"
     val gatewayUrl = System.getenv("AUTOSININ_GATEWAY_URL")?.trim().orEmpty()
     val gatewayToken = System.getenv("AUTOSININ_GATEWAY_TOKEN")?.trim()
     val scheduleMinutes = System.getenv("AUTOSININ_SCHEDULE_INTERVAL_MIN")?.toLongOrNull() ?: 360L
@@ -33,6 +35,7 @@ fun main() {
         defaultSignUrl = signUrl,
         defaultSignToken = signToken,
         httpProxy = httpProxy,
+        protocolMode = protocolMode,
     )
     sessionManager.restoreAllSessions()
 
@@ -44,8 +47,9 @@ fun main() {
     }
     val transport = AcidifyTransport(sessionManager = sessionManager, fallback = fallbackTransport)
     val tickets = AcidifyTicketProvider(sessionManager = sessionManager, fallback = ledger)
+    val friendOperator = AcidifyFriendOperator(sessionManager)
 
-    val engine = TaskEngine(ledger = ledger, transport = transport, tickets = tickets)
+    val engine = TaskEngine(ledger = ledger, transport = transport, tickets = tickets, friendOperator = friendOperator)
     val scheduler = TaskScheduler(
         ledger = ledger,
         engine = engine,

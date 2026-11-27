@@ -8,3 +8,7 @@ dist/
 *.sqlite
 *.log
 .tmp/
+data/
+qsign-server/data/
+*.session.json
+sign-server/

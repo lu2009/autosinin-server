@@ -10,8 +10,9 @@ services:
       AUTOSININ_HOST: "0.0.0.0"
       AUTOSININ_DB_PATH: "/app/data/autosinin.db"
       AUTOSININ_SESSION_DIR: "/app/data/sessions"
-      # 填入兼容 acidify-core:1.7.0 (Lagrange V2 Sign API) 的签名服务地址，例如自建签名服务或内网节点
-      AUTOSININ_SIGN_URL: "${AUTOSININ_SIGN_URL:-}"
+      # 自建 Android 签名服务 (Unidbg libfekit.so)
+      AUTOSININ_PROTOCOL_MODE: "${AUTOSININ_PROTOCOL_MODE:-android}"
+      AUTOSININ_SIGN_URL: "${AUTOSININ_SIGN_URL:-http://host.docker.internal:8081}"
       AUTOSININ_SIGN_TOKEN: "${AUTOSININ_SIGN_TOKEN:-}"
       AUTOSININ_SCHEDULE_INTERVAL_MIN: "360"
       AUTOSININ_SCHEDULE_ENABLED: "true"

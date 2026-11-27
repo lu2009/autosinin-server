@@ -3,6 +3,7 @@ package io.github.luna.autosinin.server.acidify
 import io.github.luna.autosinin.server.core.AccountInfo
 import io.github.luna.autosinin.server.core.AccountLedger
 import io.github.luna.autosinin.server.core.ServerLog
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -12,12 +13,17 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.ntqqrev.acidify.AbstractBot
+import org.ntqqrev.acidify.AndroidBot
 import org.ntqqrev.acidify.Bot
 import org.ntqqrev.acidify.common.AppInfo
 import org.ntqqrev.acidify.common.LagrangeUrlSignProvider
 import org.ntqqrev.acidify.common.SessionStore
 import org.ntqqrev.acidify.common.SignProvider
 import org.ntqqrev.acidify.common.UrlSignProvider
+import org.ntqqrev.acidify.common.android.AndroidAppInfo
+import org.ntqqrev.acidify.common.android.AndroidSessionStore
+import org.ntqqrev.acidify.common.android.AndroidUrlSignProvider
 import org.ntqqrev.acidify.event.BotOfflineEvent
 import org.ntqqrev.acidify.event.QRCodeGeneratedEvent
 import org.ntqqrev.acidify.event.SessionStoreUpdatedEvent
@@ -60,10 +66,12 @@ class AcidifySessionManager(
     private val defaultSignUrl: String = "",
     private val defaultSignToken: String = "",
     private val httpProxy: String = "",
+    private val protocolMode: String = "linux",
 ) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val bots = ConcurrentHashMap<String, Bot>()
+    private val bots = ConcurrentHashMap<String, AbstractBot>()
     private val qrSessions = ConcurrentHashMap<String, QrLoginStateDto>()
+    private val pendingVerifications = ConcurrentHashMap<String, CompletableDeferred<String>>()
     private val healthClient = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(5, TimeUnit.SECONDS)
@@ -82,7 +90,7 @@ class AcidifySessionManager(
         sessionDir.mkdirs()
     }
 
-    fun getBot(uin: String): Bot? = bots[uin]
+    fun getBot(uin: String): AbstractBot? = bots[uin]
 
     fun listOnlineUins(): List<String> = bots.entries.filter { it.value.isLoggedIn }.map { it.key }.sorted()
 
@@ -92,7 +100,22 @@ class AcidifySessionManager(
             ServerLog.w(TAG, "AUTOSININ_SIGN_URL not set; skip restoring acidify sessions")
             return
         }
-        val files = sessionDir.listFiles { f -> f.isFile && f.name.endsWith(".session.json") }.orEmpty()
+        val androidFiles = sessionDir.listFiles { f -> f.isFile && f.name.endsWith(".android.session.json") }.orEmpty()
+        for (file in androidFiles) {
+            runCatching {
+                val store = AndroidSessionStore.fromJson(file.readText(Charsets.UTF_8))
+                if (store.uin <= 0L) return@runCatching
+                val uin = store.uin.toString()
+                scope.launch {
+                    restoreSingleAndroid(uin, store)
+                }
+            }.onFailure {
+                ServerLog.w(TAG, "failed to load android session ${file.name}: ${it.message}")
+            }
+        }
+        val files = sessionDir.listFiles { f ->
+            f.isFile && f.name.endsWith(".session.json") && !f.name.endsWith(".android.session.json")
+        }.orEmpty()
         for (file in files) {
             runCatching {
                 val store = SessionStore.fromJson(file.readText(Charsets.UTF_8))
@@ -107,10 +130,38 @@ class AcidifySessionManager(
         }
     }
 
+    private suspend fun restoreSingleAndroid(uin: String, store: AndroidSessionStore) {
+        runCatching {
+            if (store.deviceName.startsWith("Lagrange-")) {
+                store.deviceName = REAL_DEVICE_NAME
+            }
+            val signProvider = AndroidUrlSignProvider(defaultSignUrl, httpProxy)
+            val bot = AndroidBot(
+                appInfo = resolveAndroidAppInfo(),
+                sessionStore = store,
+                signProvider = signProvider,
+                scope = scope,
+                minLogLevel = LogLevel.INFO,
+                logHandler = logHandler,
+            )
+            attachBotListeners(bot)
+            bot.login(
+                onRequireCaptchaTicket = { url -> error("Captcha required: $url") },
+                onRequireSmsCode = { _, _, _ -> error("SMS verification required") },
+            )
+            bots[uin] = bot
+            saveAndroidSession(uin, bot.sessionStore)
+            ledger.upsertAccount(AccountInfo(uin = uin, nickname = uin, enabled = true))
+            ServerLog.i(TAG, "uin=$uin android session restored and logged in")
+        }.onFailure {
+            ServerLog.w(TAG, "uin=$uin android restore failed: ${it.javaClass.simpleName}: ${it.message}")
+        }
+    }
+
     private suspend fun restoreSingle(uin: String, store: SessionStore) {
         runCatching {
             val signProvider = buildSignProvider(defaultSignUrl, defaultSignToken, store)
-            val appInfo = resolveAppInfo(defaultSignUrl)
+            val appInfo = resolveAppInfo(defaultSignUrl, defaultSignToken)
             val bot = Bot(
                 appInfo = appInfo,
                 sessionStore = store,
@@ -147,7 +198,7 @@ class AcidifySessionManager(
         qrSessions[qrId] = initial
 
         val store = SessionStore.empty()
-        val appInfo = resolveAppInfo(signUrl)
+        val appInfo = resolveAppInfo(signUrl, signToken)
         val signProvider = buildSignProvider(signUrl, signToken, store)
         val bot = Bot(
             appInfo = appInfo,
@@ -200,6 +251,87 @@ class AcidifySessionManager(
         return initial
     }
 
+    /** 发起一次 Android 协议账密登录（配合自建 :qsign-server），支持异步滑块/短信验证。 */
+    fun startAndroidLogin(uin: Long, password: String, signUrlOverride: String? = null): QrLoginStateDto {
+        val signUrl = signUrlOverride?.takeIf { it.isNotBlank() } ?: defaultSignUrl
+        if (signUrl.isBlank()) {
+            return QrLoginStateDto(qrId = "", status = "ERROR", error = "未配置 AUTOSININ_SIGN_URL")
+        }
+        val uinStr = uin.toString()
+        val loginId = "android-$uinStr-${UUID.randomUUID().toString().take(8)}"
+        val initial = QrLoginStateDto(qrId = loginId, status = "LOGGING_IN", uin = uinStr)
+        qrSessions[loginId] = initial
+
+        val store = AndroidSessionStore.empty(uin, password).apply {
+            androidId = REAL_ANDROID_ID
+            deviceName = REAL_DEVICE_NAME
+        }
+        val bot = AndroidBot(
+            appInfo = resolveAndroidAppInfo(),
+            sessionStore = store,
+            signProvider = AndroidUrlSignProvider(signUrl, httpProxy),
+            scope = scope,
+            minLogLevel = LogLevel.INFO,
+            logHandler = logHandler,
+        )
+        attachBotListeners(bot)
+
+        scope.launch {
+            runCatching {
+                bot.login(
+                    onRequireCaptchaTicket = { url ->
+                        val deferred = CompletableDeferred<String>()
+                        pendingVerifications[loginId] = deferred
+                        qrSessions[loginId] = QrLoginStateDto(
+                            qrId = loginId,
+                            status = "NEED_CAPTCHA",
+                            url = url,
+                            uin = uinStr,
+                        )
+                        ServerLog.i(TAG, "loginId=$loginId captcha required: $url")
+                        deferred.await()
+                    },
+                    onRequireSmsCode = { countryCode, phone, tips ->
+                        val deferred = CompletableDeferred<String>()
+                        pendingVerifications[loginId] = deferred
+                        qrSessions[loginId] = QrLoginStateDto(
+                            qrId = loginId,
+                            status = "NEED_SMS",
+                            url = "$countryCode $phone $tips".trim(),
+                            uin = uinStr,
+                        )
+                        ServerLog.i(TAG, "loginId=$loginId sms required: $countryCode $phone")
+                        deferred.await()
+                    },
+                )
+                bots[uinStr] = bot
+                saveAndroidSession(uinStr, bot.sessionStore)
+                ledger.upsertAccount(AccountInfo(uin = uinStr, nickname = uinStr, enabled = true))
+                qrSessions[loginId] = QrLoginStateDto(qrId = loginId, status = "LOGGED_IN", uin = uinStr)
+                ServerLog.i(TAG, "uin=$uinStr android login succeeded (mode=$protocolMode)")
+            }.onFailure { err ->
+                pendingVerifications.remove(loginId)?.cancel()
+                ServerLog.w(TAG, "uin=$uinStr android login failed: ${err.message}")
+                qrSessions[loginId] = QrLoginStateDto(
+                    qrId = loginId,
+                    status = "ERROR",
+                    uin = uinStr,
+                    error = "${err.javaClass.simpleName}: ${err.message}",
+                )
+            }
+        }
+        return initial
+    }
+
+    fun submitVerification(loginId: String, code: String): Boolean {
+        val deferred = pendingVerifications.remove(loginId) ?: return false
+        qrSessions[loginId] = qrSessions[loginId]?.copy(
+            status = "LOGGING_IN",
+            updatedAt = System.currentTimeMillis(),
+        ) ?: QrLoginStateDto(qrId = loginId, status = "LOGGING_IN")
+        return deferred.complete(code.trim())
+    }
+
     fun getQrState(qrId: String): QrLoginStateDto? = qrSessions[qrId]
 
     fun checkSignServerHealth(): SignHealthDto {
@@ -226,7 +358,7 @@ class AcidifySessionManager(
         }
     }
 
-    private fun attachBotListeners(bot: Bot) {
+    private fun attachBotListeners(bot: AbstractBot) {
         scope.launch {
             bot.eventFlow.filterIsInstance<SessionStoreUpdatedEvent>().collect { ev ->
                 val uin = ev.sessionStore.uin
@@ -247,9 +379,17 @@ class AcidifySessionManager(
         file.writeText(store.toJson(), Charsets.UTF_8)
     }
 
-    private suspend fun resolveAppInfo(signUrl: String): AppInfo {
-        return UrlSignProvider(signUrl, httpProxy).getAppInfo()
-            ?: error("Sign server did not return AppInfo: $signUrl")
+    private fun saveAndroidSession(uin: String, store: AndroidSessionStore) {
+        val file = File(sessionDir, "$uin.android.session.json")
+        file.writeText(store.toJson(), Charsets.UTF_8)
+    }
+
+    private suspend fun resolveAppInfo(signUrl: String, signToken: String): AppInfo {
+        if (signToken.isNotBlank()) {
+            return AppInfo.Bundled.Linux_46494
+        }
+        return runCatching { UrlSignProvider(signUrl, httpProxy).getAppInfo() }.getOrNull()
+            ?: AppInfo.Bundled.Linux
     }
 
     private fun buildSignProvider(signUrl: String, signToken: String, store: SessionStore): SignProvider {
@@ -271,7 +411,56 @@ class AcidifySessionManager(
         scope.cancel()
     }
 
+    private fun resolveAndroidAppInfo(): AndroidAppInfo =
+        if (protocolMode == "android_phone") ANDROID_PHONE_9_3_85 else ANDROID_PAD_9_3_85
+
     companion object {
         private const val TAG = "ACIDIFY"
+        private const val REAL_ANDROID_ID = "82925c0e28a82a89"
+        private const val REAL_DEVICE_NAME = "22041211AC"
+
+        private val ANDROID_PHONE_9_3_85 = AndroidAppInfo(
+            os = AndroidAppInfo.Bundled.AndroidPhone.os,
+            kernel = AndroidAppInfo.Bundled.AndroidPhone.kernel,
+            vendorOs = AndroidAppInfo.Bundled.AndroidPhone.vendorOs,
+            qua = "V1_AND_SQ_9.3.85_16920_YYB_D",
+            currentVersion = "9.3.85.fe91e501",
+            ptVersion = "9.3.85",
+            ssoVersion = AndroidAppInfo.Bundled.AndroidPhone.ssoVersion,
+            packageName = AndroidAppInfo.Bundled.AndroidPhone.packageName,
+            apkSignatureMd5 = AndroidAppInfo.Bundled.AndroidPhone.apkSignatureMd5,
+            sdkInfo = AndroidAppInfo.WtLoginSdkInfo(
+                sdkBuildTime = 1757058014L,
+                sdkVersion = "6.0.0.2591",
+                miscBitMap = 150470524L,
+                subSigMap = 66560L,
+                mainSigMap = 16724722L,
+            ),
+            appId = AndroidAppInfo.Bundled.AndroidPhone.appId,
+            subAppId = 537402551,
+            appClientVersion = AndroidAppInfo.Bundled.AndroidPhone.appClientVersion,
+        )
+
+        private val ANDROID_PAD_9_3_85 = AndroidAppInfo(
+            os = AndroidAppInfo.Bundled.AndroidPad.os,
+            kernel = AndroidAppInfo.Bundled.AndroidPad.kernel,
+            vendorOs = AndroidAppInfo.Bundled.AndroidPad.vendorOs,
+            qua = "V1_AND_SQ_9.3.85_16920_YYB_D",
+            currentVersion = "9.3.85.fe91e501",
+            ptVersion = "9.3.85",
+            ssoVersion = AndroidAppInfo.Bundled.AndroidPad.ssoVersion,
+            packageName = AndroidAppInfo.Bundled.AndroidPad.packageName,
+            apkSignatureMd5 = AndroidAppInfo.Bundled.AndroidPad.apkSignatureMd5,
+            sdkInfo = AndroidAppInfo.WtLoginSdkInfo(
+                sdkBuildTime = 1757058014L,
+                sdkVersion = "6.0.0.2591",
+                miscBitMap = 150470524L,
+                subSigMap = 66560L,
+                mainSigMap = 16724722L,
+            ),
+            appId = AndroidAppInfo.Bundled.AndroidPad.appId,
+            subAppId = 537402012,
+            appClientVersion = AndroidAppInfo.Bundled.AndroidPad.appClientVersion,
+        )
     }
 }

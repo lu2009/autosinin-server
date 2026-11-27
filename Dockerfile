@@ -4,6 +4,7 @@ COPY gradlew gradlew.bat settings.gradle.kts build.gradle.kts gradle.properties 
 COPY gradle gradle
 COPY protocol-core protocol-core
 COPY server server
+COPY qsign-server qsign-server
 RUN chmod +x gradlew && ./gradlew :server:installDist --no-daemon
 
 FROM eclipse-temurin:25-jre
