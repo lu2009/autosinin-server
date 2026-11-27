@@ -2,6 +2,7 @@ package io.github.luna.autosinin.server.acidify
 
 import io.github.luna.autosinin.qqclient.AndroidAppInfo
 import io.github.luna.autosinin.qqclient.AndroidSessionStore
+import io.github.luna.autosinin.qqclient.DeviceProfile
 import io.github.luna.autosinin.qqclient.QsignClient
 import io.github.luna.autosinin.qqclient.SsoClient
 import io.github.luna.autosinin.qqclient.WtLoginClient
@@ -126,7 +127,7 @@ class AcidifySessionManager(
         val initial = QrLoginStateDto(qrId = qrId, status = "LOGGING_IN")
         qrSessions[qrId] = initial
 
-        val store = AndroidSessionStore.empty(0L, "", REAL_ANDROID_ID, REAL_DEVICE_NAME)
+        val store = AndroidSessionStore.empty(0L, "", DeviceProfile.freshAndroidId(), REAL_DEVICE_NAME)
         val sso = buildSsoClient("0", store, signUrl)
         val wt = WtLoginClient(sso)
 
@@ -315,7 +316,7 @@ class AcidifySessionManager(
     }
 
     @Serializable
-    private data class DeviceProfile(
+    private data class StoredDeviceProfile(
         val guidHex: String,
         val androidId: String,
         val qimei: String,
@@ -327,13 +328,13 @@ class AcidifySessionManager(
     private fun saveDeviceProfile(uin: String, store: AndroidSessionStore) {
         runCatching {
             val dir = deviceDir().apply { mkdirs() }
-            val profile = DeviceProfile(
+            val profile = StoredDeviceProfile(
                 guidHex = store.guid.joinToString("") { "%02x".format(it) },
                 androidId = store.androidId,
                 qimei = store.qimei,
                 deviceName = store.deviceName,
             )
-            File(dir, "$uin.device.json").writeText(DEVICE_JSON.encodeToString(DeviceProfile.serializer(), profile), Charsets.UTF_8)
+            File(dir, "$uin.device.json").writeText(DEVICE_JSON.encodeToString(StoredDeviceProfile.serializer(), profile), Charsets.UTF_8)
         }
     }
 
@@ -357,7 +358,7 @@ class AcidifySessionManager(
         val devFile = File(deviceDir(), "$uinStr.device.json")
         if (devFile.isFile) {
             runCatching {
-                val prof = DEVICE_JSON.decodeFromString(DeviceProfile.serializer(), devFile.readText(Charsets.UTF_8))
+                val prof = DEVICE_JSON.decodeFromString(StoredDeviceProfile.serializer(), devFile.readText(Charsets.UTF_8))
                 val guidBytes = prof.guidHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
                 if (guidBytes.size == 16) {
                     return AndroidSessionStore(
@@ -371,7 +372,7 @@ class AcidifySessionManager(
                 }
             }
         }
-        val fresh = AndroidSessionStore.empty(uin, password, REAL_ANDROID_ID, REAL_DEVICE_NAME)
+        val fresh = AndroidSessionStore.empty(uin, password, DeviceProfile.freshAndroidId(), REAL_DEVICE_NAME)
         saveDeviceProfile(uinStr, fresh)
         return fresh
     }
@@ -387,7 +388,6 @@ class AcidifySessionManager(
 
     companion object {
         private const val TAG = "SSO_MGR"
-        private const val REAL_ANDROID_ID = "82925c0e28a82a89"
         private const val REAL_DEVICE_NAME = "24091RPADC"
         private val DEVICE_JSON = Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = true }
     }

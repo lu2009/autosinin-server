@@ -230,7 +230,7 @@ class WtLoginClient(
                 writeTlv(0x66) { writeIntBE(appInfo.ssoVersion) }
                 writeTlv(0xd1) {
                     val sys = PbEdit.bytes(1, appInfo.os.toByteArray(Charsets.UTF_8)) +
-                        PbEdit.bytes(2, store.deviceName.toByteArray(Charsets.UTF_8))
+                        PbEdit.bytes(2, store.device.model.toByteArray(Charsets.UTF_8))
                     write(PbEdit.bytes(1, sys))
                     write(PbEdit.bytes(4, byteArrayOf(0x30, 0x01)))
                 }
@@ -506,11 +506,11 @@ class WtLoginClient(
             write(PbEdit.bytes(1, PbEdit.varintField(1, 283L) + PbEdit.varintField(2, 0L)))
         }.toByteArray()
         val devInfo = ByteArrayOutputStream().apply {
-            write(PbEdit.bytes(1, store.deviceName.toByteArray(Charsets.UTF_8)))
-            write(PbEdit.bytes(2, "muyu".toByteArray(Charsets.UTF_8)))
-            write(PbEdit.bytes(3, "14".toByteArray(Charsets.UTF_8)))
-            write(PbEdit.bytes(4, "Xiaomi".toByteArray(Charsets.UTF_8)))
-            write(PbEdit.bytes(5, "V816.0.6.0.TKHCNXM".toByteArray(Charsets.UTF_8)))
+            write(PbEdit.bytes(1, store.device.model.toByteArray(Charsets.UTF_8)))
+            write(PbEdit.bytes(2, store.device.codename.toByteArray(Charsets.UTF_8)))
+            write(PbEdit.bytes(3, store.device.androidVersion.toByteArray(Charsets.UTF_8)))
+            write(PbEdit.bytes(4, store.device.manufacturer.toByteArray(Charsets.UTF_8)))
+            write(PbEdit.bytes(5, store.device.incremental.toByteArray(Charsets.UTF_8)))
         }.toByteArray()
         val bizInfo = ByteArrayOutputStream().apply {
             write(PbEdit.varintField(1, 1L))
@@ -753,7 +753,7 @@ class WtLoginClient(
                     writeShortBE(store.guid.size); write(store.guid)
                     writeString16("Xiaomi")
                 }
-                writeTlv(0x16e, store.deviceName.toByteArray(Charsets.UTF_8))
+                writeTlv(0x16e, store.device.model.toByteArray(Charsets.UTF_8))
             }.build()
             write(TeaCipher.encrypt(nested, store.wloginSigs.tgtgtKey))
         }
@@ -816,15 +816,16 @@ class WtLoginClient(
     }
 
     private fun buildDeviceReport(): ByteArray = ByteArrayOutputStream().apply {
-        write(PbEdit.bytes(1, "V816.0.6.0.TKHCNXM".toByteArray(Charsets.UTF_8)))
-        write(PbEdit.bytes(2, "Linux version 5.10.198-android14".toByteArray(Charsets.UTF_8)))
+        val dev = store.device
+        write(PbEdit.bytes(1, dev.incremental.toByteArray(Charsets.UTF_8)))
+        write(PbEdit.bytes(2, dev.kernelVersion.toByteArray(Charsets.UTF_8)))
         write(PbEdit.bytes(3, "REL".toByteArray(Charsets.UTF_8)))
-        write(PbEdit.bytes(4, "V816.0.6.0.TKHCNXM".toByteArray(Charsets.UTF_8)))
-        write(PbEdit.bytes(5, "Xiaomi/24091RPADC/muyu:14/UKQ1.230917.001/V816.0.6.0.TKHCNXM:user/release-keys".toByteArray(Charsets.UTF_8)))
+        write(PbEdit.bytes(4, dev.incremental.toByteArray(Charsets.UTF_8)))
+        write(PbEdit.bytes(5, dev.fingerprint.toByteArray(Charsets.UTF_8)))
         write(PbEdit.bytes(6, "unknown".toByteArray(Charsets.UTF_8)))
         write(PbEdit.bytes(7, store.androidId.toByteArray(Charsets.UTF_8)))
         write(PbEdit.bytes(8, ByteArray(0)))
-        write(PbEdit.bytes(9, "V816.0.6.0.TKHCNXM".toByteArray(Charsets.UTF_8)))
+        write(PbEdit.bytes(9, dev.incremental.toByteArray(Charsets.UTF_8)))
     }.toByteArray()
 
     companion object {
