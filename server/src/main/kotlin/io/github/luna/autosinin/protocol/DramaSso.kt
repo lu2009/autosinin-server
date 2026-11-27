@@ -64,40 +64,6 @@ class DramaSso(private val transport: ProtoTransport) {
         return send(uin, ts, listOf("9c46_0" to body), emptySet(), sleepFn)
     }
 
-    fun queryDailyDuration(uin: String): Pair<Int, String> {
-        val ts = System.currentTimeMillis()
-        val r = transport.sendOidb(uin, 0x9d3a, 0, ByteArray(0), "${uin}_drama_dur_$ts")
-        val bytes = r.bytes ?: return -1 to "code=${r.code} ${r.detail}"
-        var i = 0
-        var daily = -1
-        while (i < bytes.size) {
-            val (key, ni) = readVarint(bytes, i) ?: break
-            i = ni
-            val f = (key shr 3).toInt(); val w = (key and 7).toInt()
-            if (f == 1 && w == 0) {
-                val (v, n2) = readVarint(bytes, i) ?: break
-                daily = v.toInt(); i = n2
-            } else if (w == 2) {
-                val (l, n2) = readVarint(bytes, i) ?: break
-                i = n2 + l.toInt()
-            } else if (w == 0) {
-                val (_, n2) = readVarint(bytes, i) ?: break; i = n2
-            } else break
-        }
-        return daily to "code=${r.code} len=${bytes.size}"
-    }
-
-    private fun readVarint(b: ByteArray, start: Int): Pair<Long, Int>? {
-        var r = 0L; var s = 0; var i = start
-        while (i < b.size) {
-            val x = b[i].toInt() and 0xff; i++
-            r = r or ((x and 0x7f).toLong() shl s)
-            if (x and 0x80 == 0) return r to i
-            s += 7
-        }
-        return null
-    }
-
     private fun baseSteps(ts: Long, token: String, scheme: String): List<Pair<String, ByteArray>> = listOf(
         "9d3b_0" to PbEdit.varintField(1, 10),
         "9983_0" to (PbEdit.bytes(1, token.toByteArray()) + PbEdit.bytes(6, "dengji_task".toByteArray())),

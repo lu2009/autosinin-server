@@ -192,12 +192,22 @@ class TaskEngine(
                 Triple(r.ok, false, desc)
             }
             "drama" -> {
-                val (daily, _) = dramaSso.queryDailyDuration(uin)
-                if (daily >= 10) {
-                    Triple(true, false, "漫剧当日累计 ${daily}s >= 10s")
+                // 0x9d3a 回包的 f1 是配置常量（实测恒为 40250），不是观看时长，
+                // 不能拿它判断完成；完成状态以 0x9172 任务列表为准。
+                val dramaTaskId = TASK_ID_MAP["drama"] ?: 1043
+                val before = miniGameStatus.fetchAllTasks(uin)
+                if (before != null && miniGameStatus.findTask(before, dramaTaskId)?.done == true) {
+                    Triple(true, false, "0x9172 漫剧任务已完成（task=$dramaTaskId）")
                 } else {
                     val r = dramaSso.finish(uin)
-                    Triple(r.ok, false, r.detail)
+                    val after = miniGameStatus.fetchAllTasks(uin)
+                    val done = after != null && miniGameStatus.findTask(after, dramaTaskId)?.done == true
+                    Triple(
+                        done,
+                        false,
+                        if (done) "0x9172 漫剧任务已标记完成（task=$dramaTaskId）"
+                        else "上报已发送但 0x9172 仍未完成：${r.detail}",
+                    )
                 }
             }
             "publish_mood" -> {
