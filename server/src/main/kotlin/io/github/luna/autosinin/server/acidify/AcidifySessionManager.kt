@@ -132,7 +132,7 @@ class AcidifySessionManager(
 
     private suspend fun restoreSingleAndroid(uin: String, store: AndroidSessionStore) {
         runCatching {
-            if (store.deviceName.startsWith("Lagrange-")) {
+            if (store.deviceName.startsWith("Lagrange-") || store.deviceName == "22041211AC") {
                 store.deviceName = REAL_DEVICE_NAME
             }
             val signProvider = AndroidUrlSignProvider(defaultSignUrl, httpProxy)
@@ -417,7 +417,7 @@ class AcidifySessionManager(
     companion object {
         private const val TAG = "ACIDIFY"
         private const val REAL_ANDROID_ID = "82925c0e28a82a89"
-        private const val REAL_DEVICE_NAME = "22041211AC"
+        private const val REAL_DEVICE_NAME = "24091RPADC"
 
         private val ANDROID_PHONE_9_3_85 = AndroidAppInfo(
             os = AndroidAppInfo.Bundled.AndroidPhone.os,

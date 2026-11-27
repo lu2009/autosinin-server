@@ -6,6 +6,7 @@ import io.github.luna.autosinin.server.core.AccountInfo
 import io.github.luna.autosinin.server.core.AccountLedger
 import io.github.luna.autosinin.server.core.ProtoTransport
 import io.github.luna.autosinin.server.core.ServerLog
+import io.github.luna.autosinin.server.core.TaskState
 import io.github.luna.autosinin.server.core.TicketRecord
 import io.github.luna.autosinin.server.engine.TaskEngine
 import io.github.luna.autosinin.server.engine.TaskExecutionResult
@@ -15,9 +16,11 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
+import io.ktor.server.http.content.staticFiles
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondFile
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
@@ -25,6 +28,7 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import java.io.File
 
 @Serializable
 data class AccountUpsertRequest(
@@ -41,6 +45,20 @@ data class AccountDto(
     val enabled: Boolean,
     val qqVersion: String,
     val updatedAt: Long,
+    val online: Boolean = false,
+    val doneCount: Int = 0,
+    val pendingCount: Int = 0,
+    val failedCount: Int = 0,
+    val totalCount: Int = TaskEngine.DEFAULT_TASKS.size,
+    val riskRestricted: Boolean = false,
+)
+
+@Serializable
+data class TaskMetaDto(
+    val key: String,
+    val title: String,
+    val category: String,
+    val remoteTaskId: Int? = null,
 )
 
 @Serializable
@@ -154,9 +172,18 @@ fun Application.configureAutoSininModule(
         )
     }
 
+    val staticDir = resolveStaticDir()
+
     routing {
-        get("/") {
-            call.respondText(DASHBOARD_HTML, ContentType.Text.Html)
+        if (staticDir != null) {
+            staticFiles("/assets", File(staticDir, "assets"))
+            get("/") {
+                call.respondFile(File(staticDir, "index.html"))
+            }
+        } else {
+            get("/") {
+                call.respondText(DASHBOARD_HTML, ContentType.Text.Html)
+            }
         }
 
         get("/health") {
@@ -170,9 +197,35 @@ fun Application.configureAutoSininModule(
             )
         }
 
+        get("/api/tasks") {
+            call.respond(TASK_CATALOG)
+        }
+
         get("/api/accounts") {
-            val list = ledger.listAccounts().map {
-                AccountDto(it.uin, it.nickname, it.enabled, it.qqVersion, it.updatedAt)
+            val today = AccountLedger.todayKey()
+            val onlineSet = sessionManager?.listOnlineUins()?.toSet().orEmpty()
+            val list = ledger.listAccounts().map { acc ->
+                val entries = ledger.listDayEntries(acc.uin, today)
+                val doneCount = entries.count { it.state == TaskState.DONE }
+                val pendingCount = entries.count { it.state == TaskState.PENDING }
+                val failedCount = entries.count { it.state == TaskState.FAILED }
+                val riskRestricted = entries.any {
+                    it.state == TaskState.FAILED &&
+                        (it.detail.contains("-10201") || it.detail.contains("Ban state", ignoreCase = true))
+                }
+                AccountDto(
+                    uin = acc.uin,
+                    nickname = acc.nickname,
+                    enabled = acc.enabled,
+                    qqVersion = acc.qqVersion,
+                    updatedAt = acc.updatedAt,
+                    online = acc.uin in onlineSet,
+                    doneCount = doneCount,
+                    pendingCount = pendingCount,
+                    failedCount = failedCount,
+                    totalCount = TaskEngine.DEFAULT_TASKS.size,
+                    riskRestricted = riskRestricted,
+                )
             }
             call.respond(list)
         }
@@ -347,8 +400,54 @@ fun Application.configureAutoSininModule(
             val limit = call.request.queryParameters["limit"]?.toIntOrNull()?.coerceIn(1, 300) ?: 100
             call.respond(ServerLog.recent(limit))
         }
+
+        if (staticDir != null) {
+            get("/{...}") {
+                val tail = call.parameters.getAll("...").orEmpty().joinToString("/")
+                if (tail.startsWith("api/") || tail == "api" || tail.startsWith("assets/")) {
+                    call.respond(HttpStatusCode.NotFound, ErrorResponse("Not Found"))
+                    return@get
+                }
+                val candidate = if (tail.isNotBlank()) File(staticDir, tail) else null
+                if (candidate != null && candidate.canonicalPath.startsWith(staticDir.canonicalPath) && candidate.isFile) {
+                    call.respondFile(candidate)
+                } else {
+                    val indexFile = File(staticDir, "index.html")
+                    if (indexFile.exists()) {
+                        call.respondFile(indexFile)
+                    } else {
+                        call.respond(HttpStatusCode.NotFound, ErrorResponse("Not Found"))
+                    }
+                }
+            }
+        }
     }
 }
+
+private fun resolveStaticDir(): File? {
+    val candidates = listOf(
+        File("/app/static"),
+        File("web/dist"),
+        File("../web/dist"),
+    )
+    return candidates.firstOrNull { File(it, "index.html").isFile }
+}
+
+private val TASK_CATALOG: List<TaskMetaDto> = listOf(
+    TaskMetaDto("vip_sign", "会员官网连续签到奖励", "每日签到与权益", 1048),
+    TaskMetaDto("daily_cards", "去日签卡打一次卡", "每日签到与权益", 28),
+    TaskMetaDto("welfare_claim", "去QQ会员福利社领福利券", "每日签到与权益", 1024),
+    TaskMetaDto("drama", "看10秒漫剧", "社区与内容互动", 1043),
+    TaskMetaDto("publish_mood", "发布一条空间说说", "社区与内容互动", 1010),
+    TaskMetaDto("publish_blind_box", "参与盲盒签并成功发布至空间", "社区与内容互动", 1013),
+    TaskMetaDto("feed_read", "浏览十条空间好友动态", "社区与内容互动", 1019),
+    TaskMetaDto("novel_read", "去看免费小说", "社区与内容互动", 1029),
+    TaskMetaDto("minigame_arena", "创建小游戏擂台并取得成绩", "小游戏与广告", 1045),
+    TaskMetaDto("minigame_trial", "体验任一款小游戏15s", "小游戏与广告", 1036),
+    TaskMetaDto("farm_login", "每日登录QQ经典农场", "小游戏与广告", 1037),
+    TaskMetaDto("video_ad", "完成视频任务获得加速时长", "小游戏与广告", 1021),
+    TaskMetaDto("add_friend", "加一位好友", "社交关系", 23),
+)
 
 private val DASHBOARD_HTML = """
 <!doctype html>

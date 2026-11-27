@@ -66,6 +66,6 @@ class ServerRoutesTest {
 
         val dashboard = client.get("/")
         assertEquals(HttpStatusCode.OK, dashboard.status)
-        assertTrue(dashboard.bodyAsText().contains("autosinin-server"))
+        assertTrue(dashboard.bodyAsText().contains("autosinin", ignoreCase = true))
     }
 }

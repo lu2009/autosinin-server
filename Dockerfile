@@ -1,3 +1,10 @@
+FROM node:22-alpine AS web-builder
+WORKDIR /web
+COPY web/package.json web/package-lock.json* ./
+RUN npm ci
+COPY web ./
+RUN npm run build
+
 FROM eclipse-temurin:21-jdk AS builder
 WORKDIR /build
 COPY gradlew gradlew.bat settings.gradle.kts build.gradle.kts gradle.properties ./
@@ -10,6 +17,7 @@ RUN chmod +x gradlew && ./gradlew :server:installDist --no-daemon
 FROM eclipse-temurin:25-jre
 WORKDIR /app
 COPY --from=builder /build/server/build/install/server /app
+COPY --from=web-builder /web/dist /app/static
 RUN mkdir -p /app/data/sessions
 EXPOSE 8080
 ENV AUTOSININ_PORT=8080 \

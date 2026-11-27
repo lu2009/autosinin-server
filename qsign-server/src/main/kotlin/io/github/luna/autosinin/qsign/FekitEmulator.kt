@@ -356,24 +356,25 @@ class FekitEmulator(
 
     companion object {
         private const val REAL_ANDROID_ID = "82925c0e28a82a89"
-        private const val REAL_DENSITY = "2.625"
-        private const val REAL_SCREEN_SIZE = "1080x2400"
+        private const val REAL_DENSITY = "2.0"
+        private const val REAL_SCREEN_SIZE = "3200x2136"
 
         private val SYSTEM_PROPS = mapOf(
             "ro.product.manufacturer" to "Xiaomi",
-            "ro.product.brand" to "Redmi",
-            "ro.product.model" to "22041211AC",
-            "ro.product.name" to "rubens",
-            "ro.product.device" to "rubens",
-            "ro.product.board" to "rubens",
-            "ro.board.platform" to "mt6895",
-            "ro.hardware" to "mt6895",
-            "ro.build.version.release" to "14",
-            "ro.build.version.sdk" to "34",
-            "ro.build.version.incremental" to "OS2.0.5.0.ULNCNXM",
-            "ro.build.fingerprint" to "Redmi/rubens/rubens:14/UP1A.231005.007/OS2.0.5.0.ULNCNXM:user/release-keys",
-            "ro.build.display.id" to "UP1A.231005.007",
-            "ro.serialno" to "ONRONJUWDMIJIN5L",
+            "ro.product.brand" to "Xiaomi",
+            "ro.product.model" to "24091RPADC",
+            "ro.product.name" to "muyu",
+            "ro.product.device" to "muyu",
+            "ro.product.board" to "pineapple",
+            "ro.board.platform" to "pineapple",
+            "ro.hardware" to "qcom",
+            "ro.soc.model" to "SM8635",
+            "ro.build.version.release" to "17",
+            "ro.build.version.sdk" to "37",
+            "ro.build.version.incremental" to "OS4.0.4.0.XOYCNXM",
+            "ro.build.fingerprint" to "Xiaomi/muyu/muyu:17/CP2A.260605.016/OS4.0.4.0.XOYCNXM:user/release-keys",
+            "ro.build.display.id" to "CP2A.260605.016",
+            "ro.serialno" to "8A4K92M1047B",
         )
 
         private fun formatGuidAsUuid(guid: String): String {

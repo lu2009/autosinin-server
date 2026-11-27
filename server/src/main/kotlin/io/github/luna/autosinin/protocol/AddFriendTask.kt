@@ -42,7 +42,7 @@ class AddFriendTask(
         for ((idx, target) in targets.withIndex()) {
             val deleted = runCatching { friendOperator.deleteFriendIfPresent(uin, target) }.getOrDefault(false)
             if (deleted) {
-                sleepFn(Random.nextLong(900L, 1_800L))
+                sleepFn(Random.nextLong(3_000L, 6_000L))
             }
 
             val req = buildAddBuddyReq(targetUin = target)
@@ -52,7 +52,7 @@ class AddFriendTask(
             details += "$target:del=$deleted,code=${resp.code}"
 
             if (idx != targets.lastIndex) {
-                sleepFn(Random.nextLong(2_500L, 5_500L))
+                sleepFn(Random.nextLong(5_000L, 9_500L))
             }
         }
 
@@ -75,7 +75,7 @@ class AddFriendTask(
             sourceId: Long = DEFAULT_SOURCE_ID,
             subSourceId: Long = 0L,
             guidHex: String = "be9741c6cffd0a340d99c75610001751",
-            deviceName: String = "22041211AC",
+            deviceName: String = "24091RPADC",
         ): ByteArray {
             val verifySub = ByteArrayOutputStream().apply {
                 write(PbEdit.bytes(1, guidHex.toByteArray(Charsets.UTF_8)))

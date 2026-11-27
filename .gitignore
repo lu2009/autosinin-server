@@ -9,6 +9,8 @@ dist/
 *.log
 .tmp/
 data/
-qsign-server/data/
+qsign-server/
+node_modules/data/
 *.session.json
 sign-server/
+node_modules/

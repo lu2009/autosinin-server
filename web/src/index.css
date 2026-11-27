@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light dark;
+  --apple-bg: #f5f5f7;
+  --apple-surface: #ffffff;
+  --apple-surface-secondary: #f2f2f7;
+  --apple-sidebar: rgba(255, 255, 255, 0.72);
+  --apple-header: rgba(245, 245, 247, 0.76);
+  --apple-text: #1d1d1f;
+  --apple-text-secondary: #6e6e73;
+  --apple-text-tertiary: #8e8e93;
+  --apple-border: rgba(0, 0, 0, 0.08);
+  --apple-separator: rgba(60, 60, 67, 0.12);
+  --apple-blue: #007aff;
+  --apple-green: #34c759;
+  --apple-orange: #ff9500;
+  --apple-red: #ff3b30;
+  --apple-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 4px 16px rgba(0, 0, 0, 0.03);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --apple-bg: #000000;
+    --apple-surface: #1c1c1e;
+    --apple-surface-secondary: #2c2c2e;
+    --apple-sidebar: rgba(28, 28, 30, 0.74);
+    --apple-header: rgba(18, 18, 20, 0.78);
+    --apple-text: #f5f5f7;
+    --apple-text-secondary: #98989d;
+    --apple-text-tertiary: #636366;
+    --apple-border: rgba(255, 255, 255, 0.1);
+    --apple-separator: rgba(255, 255, 255, 0.12);
+    --apple-blue: #0a84ff;
+    --apple-green: #30d158;
+    --apple-orange: #ff9f0a;
+    --apple-red: #ff453a;
+    --apple-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background-color: var(--apple-bg);
+  color: var(--apple-text);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.apple-vibrancy {
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+
+.apple-card {
+  background-color: var(--apple-surface);
+  border: 0.5px solid var(--apple-border);
+  box-shadow: var(--apple-shadow);
+  border-radius: 16px;
+}
+
+@keyframes sheetIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-sheet-in {
+  animation: sheetIn 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
