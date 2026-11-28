@@ -779,7 +779,7 @@ class WtLoginClient(
                     writeShortBE(0)
                     write(0); write(0); write(0)
                     writeIntBE(0)
-                    writeString16(appInfo.os)
+                    writeString16(store.device.model)
                     writeShortBE(store.guid.size); write(store.guid)
                     writeString16(store.device.brand)
                 }
