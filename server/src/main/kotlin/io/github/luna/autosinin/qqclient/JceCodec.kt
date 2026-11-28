@@ -104,6 +104,24 @@ class JceWriter {
         }
     }
 
+    fun writeMapOfBytes(tag: Int, entries: Map<String, ByteArray>) {
+        head(tag, JceType.MAP)
+        writeSize(entries.size)
+        for ((key, value) in entries) {
+            writeString(0, key)
+            writeBytes(0, value)
+        }
+    }
+
+    fun writeMapOfMaps(tag: Int, entries: Map<String, Map<String, ByteArray>>) {
+        head(tag, JceType.MAP)
+        writeSize(entries.size)
+        for ((key, inner) in entries) {
+            writeString(0, key)
+            writeMapOfBytes(0, inner)
+        }
+    }
+
     fun writeEmptyMap(tag: Int) {
         head(tag, JceType.MAP)
         writeSize(0)

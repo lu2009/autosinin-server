@@ -85,7 +85,7 @@ Command 为 `ConfigPushSvc.PushReq`，payload 直接以 JCE 结构开头，**没
 8c 98 0c a8 0c                                   tag8 ZERO, tag9/10 空 map
 ```
 
-### 2. sBuffer 是双层 map
+### 2. sBuffer 是三层结构（已完整解码验证）
 
 ```
 08 00 01                                 map, size=1
@@ -95,7 +95,17 @@ Command 为 `ConfigPushSvc.PushReq`，payload 直接以 JCE 结构开头，**没
 1d 00 01 10 a2 0a                        value = bytes(0x10a2 = 4258)
 ```
 
-内层 4258 字节的内容（节选）：
+内层字节 = JCE struct `f`，完整解析结果：
+
+```
+0a                     STRUCT_BEGIN
+10 01                  tag1 BYTE  a = 1          ← 推送类型
+2d 00 01 10 9e         tag2 SIMPLE_LIST  b = 4240 字节  ← 服务器列表
+33 00 00 00 10 f4 ...  tag3 LONG      c = 284396523    ← 回包要带回
+0b                     STRUCT_END
+```
+
+`b` 字段就是服务器列表，节选：
 
 ```
 0a 16 0d 31 32 33 2e 31 32 35 2e 30 2e 31 39 35     "123.125.0.195"
@@ -105,12 +115,9 @@ c6 47 69 64 3d 30 26 6c 69 73 74 3d 32 47 33 47 ...  "id=0&list=2G3G&ipv4=1&echo
 
 可以识别出这是 **服务器 IP 列表**（`ConfigPush.PushDomain` 同源内容），每条记录含 IP、端口、协议参数。
 
-### 3. 与 SDK 结构的矛盾
+### 3. 结论
 
-SDK 用 `getByClass("PushReq", f)` 取 `f{int a; byte[] b; long c}`，但实际 sBuffer 的 `"PushReq"` 值是一个**嵌套 map**，而不是 `f` 结构。因此：
-
-- `type` / `seq` 无法从当前报文按 SDK 结构直接取得
-- 内层 `ConfigPush.PushReq` 的字节格式尚未确定（不是 `f`）
+SDK 的 `getByClass("PushReq", f)` 对嵌套 map 做了隐式处理：取内层 `ConfigPush.PushReq` 的字节再按 `f` 解码。本实现按同样路径解析，已验证可用。
 
 ## 三、本实现现状
 
@@ -130,15 +137,21 @@ SDK 用 `getByClass("PushReq", f)` 取 `f{int a; byte[] b; long c}`，但实际 
 - servant = `QQService.ConfigPushSvc.MainServant`，func = `PushResp`
 - JCE 的 map/list/simple-list 长度是**带标签的 int**（0 → `0x0C`，非 0 → `0x02` + 4 字节）
 
-### 阻塞点
+### 回包已跑通（2026-11-28 22:25）
 
-解码在 sBuffer 第二层停下：拿不到 `type`/`seq`，因此**没有发出回包**。失败日志只打印一次，不影响运行。
+```
+uin=3937903488 已回复 ConfigPushSvc.PushResp type=1 seq=284575705 ssoSeq=-1594472488
+uin=2475318409 已回复 ConfigPushSvc.PushResp type=2 seq=541606003 ssoSeq=-1337442190
+uin=2475318409 已回复 ConfigPushSvc.PushResp type=1 seq=305652947 ssoSeq=-1573395246
+```
 
-## 四、待确认
+`seq` 为 `f.c` 的回显，`ssoSeq` 复用原推送的序列号。
 
-1. 内层 `ConfigPush.PushReq` 4258 字节的精确格式（疑似 JCE 列表，元素为 `{string ip, short port, ..., string params}`）
-2. 若内层确实不是 `f` 结构，真机 `getByClass("PushReq", f)` 为何不报错 —— 需要确认 Tars `UniPacket.getByClass` 对嵌套 map 的处理
-3. `PushResp` 的 `b` 字段（long）来自 `req.c` 的语义（疑似时间戳/序号）
+## 四、剩余问题
+
+1. `f.b` 里 4240 字节服务器列表的内部格式（JCE 列表，元素含 IP、端口、`id=0&list=2G3G&...` 参数）
+2. `f.c` 的语义（每次推送不同，疑似序号或时间戳）
+3. type=2 的业务负载是否需要额外处理（当前只回包不解析）
 
 ## 五、参考：完整 WUP 字段顺序
 

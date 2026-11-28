@@ -48,6 +48,36 @@ class ConfigPushCodecTest {
     }
 
     @Test
+    fun decodesNestedConfigPushShape() {
+        val blob = JceWriter().apply {
+            writeInt(1, 1)
+            writeBytes(2, byteArrayOf(0x11, 0x22))
+            writeLong(3, 99887766L)
+        }.toByteArray()
+        val struct = byteArrayOf(0x0A) + blob + byteArrayOf(0x0B)
+        val sBuffer = JceWriter().apply {
+            writeMapOfMaps(0, mapOf("PushReq" to mapOf("ConfigPush.PushReq" to struct)))
+        }.toByteArray()
+        val packet = JceWriter().apply {
+            writeByte(1, 2)
+            writeZero(2)
+            writeZero(3)
+            writeZero(4)
+            writeString(5, "QQService.ConfigPushSvc.MainServant")
+            writeString(6, "PushReq")
+            writeBytes(7, sBuffer)
+            writeZero(8)
+            writeEmptyMap(9)
+            writeEmptyMap(10)
+        }.toByteArray()
+
+        val decoded = ConfigPushCodec.decodePushReq(packet)
+        assertEquals(1, decoded.type)
+        assertEquals(99887766L, decoded.seq)
+        assertArrayEquals(byteArrayOf(0x11, 0x22), decoded.buf)
+    }
+
+    @Test
     fun encodedPushRespCarriesTypeAndSeq() {
         val encoded = ConfigPushCodec.encodePushResp(
             ConfigPushCodec.PushReq(type = 2, buf = ByteArray(0), seq = 11223344L),

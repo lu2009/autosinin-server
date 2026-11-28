@@ -18,7 +18,7 @@ object ConfigPushCodec {
             }
         }
         val sb = sBuffer ?: error("PushReq missing sBuffer")
-        return decodePushReqStruct(extractMapStruct(sb))
+        return decodePushReqStruct(extractStructBytes(sb))
     }
 
     private fun readIntBE(b: ByteArray): Int =
@@ -27,7 +27,7 @@ object ConfigPushCodec {
             ((b[2].toInt() and 0xFF) shl 8) or
             (b[3].toInt() and 0xFF)
 
-    private fun extractMapStruct(sBuffer: ByteArray): ByteArray {
+    private fun extractStructBytes(sBuffer: ByteArray): ByteArray {
         val reader = JceReader(sBuffer)
         val (_, mapType) = reader.readHead()
         require(mapType == JceType.MAP) { "sBuffer is not a map" }
@@ -38,7 +38,20 @@ object ConfigPushCodec {
         return when (valueType) {
             JceType.STRUCT_BEGIN -> reader.readStructFields()
             JceType.SIMPLE_LIST -> reader.readBytesValue()
+            JceType.MAP -> readNestedMapValue(reader)
             else -> error("sBuffer value type=$valueType")
+        }
+    }
+
+    private fun readNestedMapValue(reader: JceReader): ByteArray {
+        require(reader.readTaggedInt() >= 1) { "inner map is empty" }
+        val (_, keyType) = reader.readHead()
+        reader.skipValue(keyType)
+        val (_, valueType) = reader.readHead()
+        return when (valueType) {
+            JceType.SIMPLE_LIST -> reader.readBytesValue()
+            JceType.STRUCT_BEGIN -> reader.readStructFields()
+            else -> error("inner value type=$valueType")
         }
     }
 
@@ -49,16 +62,18 @@ object ConfigPushCodec {
         val reader = JceReader(fields)
         while (!reader.eof()) {
             val (tag, fieldType) = reader.readHead()
-            when (tag) {
-                1 -> type = reader.readNumber(fieldType).toInt()
-                2 -> {
+            when {
+                fieldType == JceType.STRUCT_BEGIN -> Unit
+                fieldType == JceType.STRUCT_END -> break
+                tag == 1 -> type = reader.readNumber(fieldType).toInt()
+                tag == 2 -> {
                     if (fieldType == JceType.SIMPLE_LIST) {
                         buf = reader.readBytesValue()
                     } else {
                         reader.skipValue(fieldType)
                     }
                 }
-                3 -> seq = reader.readNumber(fieldType)
+                tag == 3 -> seq = reader.readNumber(fieldType)
                 else -> reader.skipValue(fieldType)
             }
         }
