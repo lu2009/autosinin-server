@@ -31,6 +31,7 @@ import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import kotlin.random.Random
 
 @Serializable
 data class QrLoginStateDto(
@@ -356,26 +357,40 @@ class AcidifySessionManager(
 
     private val recoveryJobs = ConcurrentHashMap<String, Job>()
     private val needVerify = ConcurrentHashMap<String, String>()
+    private val refreshDue = ConcurrentHashMap<String, Long>()
 
     /** 需要人工验证（滑块/短信），自动恢复到此为止。 */
     private class NeedVerification(message: String) : Exception(message)
 
     /** 每隔一段时间用 a1 主动换新令牌，避免"放一夜就掉"。 */
+    private fun nextRefreshAt(): Long {
+        val span = REFRESH_MIN_MS + Random.nextLong(REFRESH_MAX_MS - REFRESH_MIN_MS)
+        val jitter = (span * REFRESH_JITTER_RATIO).toLong()
+        return System.currentTimeMillis() + span + Random.nextLong(-jitter, jitter + 1)
+    }
+
     private fun startRefreshLoop() {
         scope.launch {
             while (isActive) {
-                delay(REFRESH_INTERVAL_MS)
-                val snapshot = clients.entries.toList()
+                delay(REFRESH_TICK_MS)
+                refreshDue.keys.retainAll(clients.keys)
+                val snapshot = clients.entries.toList().filter { it.value.isOnline }
+                var renewed = 0
                 for ((uin, client) in snapshot) {
-                    if (!client.isOnline) continue
+                    val due = refreshDue.getOrPut(uin) { nextRefreshAt() }
+                    if (System.currentTimeMillis() < due) continue
+                    if (renewed > 0) delay(Random.nextLong(STAGGER_MIN_MS, STAGGER_MAX_MS))
+                    val next = nextRefreshAt()
                     runCatching {
                         WtLoginClient(client).renewSession()
                         saveAndroidSession(uin, client.sessionStore)
-                        ServerLog.i(TAG, "uin=$uin 定时续期成功")
+                        ServerLog.i(TAG, "uin=$uin 定时续期成功（下次约 ${(next - System.currentTimeMillis()) / 60_000} 分钟后）")
                     }.onFailure { err ->
                         ServerLog.w(TAG, "uin=$uin 定时续期失败：${err.message}，转入自动恢复")
                         scheduleRecovery(uin, "refresh failed: ${err.message}")
                     }
+                    refreshDue[uin] = next
+                    renewed++
                 }
             }
         }
@@ -573,7 +588,12 @@ class AcidifySessionManager(
     companion object {
         private const val TAG = "SSO_MGR"
         private const val REAL_DEVICE_NAME = "24091RPADC"
-        private const val REFRESH_INTERVAL_MS = 5 * 60 * 60 * 1000L   // 5 小时主动续期
+        private const val REFRESH_TICK_MS = 5 * 60 * 1000L
+        private const val REFRESH_MIN_MS = 12 * 60 * 60 * 1000L
+        private const val REFRESH_MAX_MS = 24 * 60 * 60 * 1000L
+        private const val REFRESH_JITTER_RATIO = 0.05
+        private const val STAGGER_MIN_MS = 30_000L
+        private const val STAGGER_MAX_MS = 90_000L
         private const val WATCHDOG_INTERVAL_MS = 2 * 60 * 1000L       // 2 分钟巡检
         private const val MAX_RECOVERY_ATTEMPTS = 10
         private const val MAX_BACKOFF_MS = 60_000L
