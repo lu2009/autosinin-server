@@ -78,6 +78,11 @@ data class TicketDto(
 )
 
 @Serializable
+data class QrStartRequest(
+    val uin: String? = null,
+)
+
+@Serializable
 data class RunTasksRequest(
     val tasks: List<String> = emptyList(),
     val force: Boolean = false,
@@ -329,7 +334,8 @@ fun Application.configureAutoSininModule(
                 call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("AcidifySessionManager not enabled"))
                 return@post
             }
-            val state = mgr.startQrLogin()
+            val req = runCatching { call.receive<QrStartRequest>() }.getOrNull()
+            val state = mgr.startQrLogin(targetUin = req?.uin)
             call.respond(state)
         }
 

@@ -127,6 +127,7 @@ class AcidifySessionManager(
     fun startQrLogin(
         signUrlOverride: String? = null,
         @Suppress("unused") signTokenOverride: String? = null,
+        targetUin: String? = null,
     ): QrLoginStateDto {
         val signUrl = signUrlOverride?.takeIf { it.isNotBlank() } ?: defaultSignUrl
         if (signUrl.isBlank()) {
@@ -136,7 +137,7 @@ class AcidifySessionManager(
         val initial = QrLoginStateDto(qrId = qrId, status = "LOGGING_IN")
         qrSessions[qrId] = initial
 
-        val store = AndroidSessionStore.empty(0L, "", DeviceProfile.freshAndroidId(), REAL_DEVICE_NAME)
+        val store = createQrStore(targetUin)
         val sso = buildSsoClient("0", store, signUrl)
         val wt = WtLoginClient(sso)
 
@@ -308,6 +309,17 @@ class AcidifySessionManager(
         }
     }
 
+    private fun createQrStore(targetUin: String?): AndroidSessionStore {
+        val uinLong = targetUin?.trim()?.toLongOrNull()
+        if (uinLong != null && uinLong > 0L) {
+            return loadOrCreateStoreWithStableDevice(uinLong, "").apply {
+                this.uin = 0L
+                this.password = ""
+            }
+        }
+        return AndroidSessionStore.empty(0L, "", DeviceProfile.freshAndroidId(), REAL_DEVICE_NAME)
+    }
+
     private fun buildSsoClient(uin: String, store: AndroidSessionStore, signUrl: String): SsoClient {
         return SsoClient(
             appInfo = resolveAndroidAppInfo(),
@@ -315,14 +327,20 @@ class AcidifySessionManager(
             signClient = QsignClient(signUrl),
             scope = scope,
             onOffline = { reason ->
-                // 扫码登录时 client 是用占位 uin "0" 构造的；登录完成后 store.uin 才是真实值。
-                // 仍未完成登录（uin=0）时不做恢复，否则会为不存在的会话空跑 10 次退避。
                 val actualUin = if (store.uin > 0L) store.uin.toString() else uin
-                if (actualUin != "0") {
-                    ServerLog.w(TAG, "uin=$actualUin went offline: $reason")
-                    scheduleRecovery(actualUin, reason)
-                } else {
-                    ServerLog.i(TAG, "uin=0（扫码未完成）连接结束: $reason")
+                when {
+                    actualUin == "0" -> {
+                        ServerLog.i(TAG, "uin=0（扫码未完成）连接结束: $reason")
+                    }
+                    reason.startsWith("server push:") -> {
+                        ServerLog.w(TAG, "uin=$actualUin 被服务端踢下线，已熔断自动重连: $reason")
+                        needVerify[actualUin] = "被服务端踢下线（$reason），请人工重新登录"
+                        clients.remove(actualUin)?.close()
+                    }
+                    else -> {
+                        ServerLog.w(TAG, "uin=$actualUin went offline: $reason")
+                        scheduleRecovery(actualUin, reason)
+                    }
                 }
             },
         )
