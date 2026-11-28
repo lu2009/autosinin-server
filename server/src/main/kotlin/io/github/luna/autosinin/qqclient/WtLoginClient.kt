@@ -358,6 +358,7 @@ class WtLoginClient(
             internalTlv[0x16D]?.let { superKey = it }
             internalTlv[0x512]?.let { raw512 ->
                 psKey = parseTlv512(raw512)
+                store.psKeyUpdatedAt = System.currentTimeMillis()
             }
         }
         internalTlv[0x543]?.let { raw543 ->

@@ -50,7 +50,13 @@ fun main() {
     val tickets = AcidifyTicketProvider(sessionManager = sessionManager, fallback = ledger)
     val friendOperator = AcidifyFriendOperator(sessionManager)
 
-    val engine = TaskEngine(ledger = ledger, transport = transport, tickets = tickets, friendOperator = friendOperator)
+    val engine = TaskEngine(
+        ledger = ledger,
+        transport = transport,
+        tickets = tickets,
+        friendOperator = friendOperator,
+        beforeRun = { uin -> sessionManager.refreshIfStale(uin) },
+    )
     val scheduler = TaskScheduler(
         ledger = ledger,
         engine = engine,

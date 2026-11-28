@@ -103,6 +103,7 @@ data class AndroidSessionStore(
     var qimei: String = "",
     var deviceName: String = "",
     var device: DeviceProfile = DeviceProfile(),
+    var psKeyUpdatedAt: Long = 0L,
 ) {
     @Serializable
     data class State(

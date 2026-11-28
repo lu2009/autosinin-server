@@ -30,6 +30,7 @@ import java.nio.file.StandardCopyOption
 import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.runBlocking
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
@@ -363,6 +364,26 @@ class AcidifySessionManager(
     private class NeedVerification(message: String) : Exception(message)
 
     /** 每隔一段时间用 a1 主动换新令牌，避免"放一夜就掉"。 */
+    fun refreshIfStale(uin: String) {
+        val client = clients[uin] ?: return
+        if (!client.isOnline) return
+        val updatedAt = client.sessionStore.psKeyUpdatedAt
+        val ageMs = System.currentTimeMillis() - updatedAt
+        if (updatedAt > 0L && ageMs < PSKEY_MAX_AGE_MS) {
+            ServerLog.i(TAG, "uin=$uin p_skey 仍新鲜（${ageMs / 60_000} 分钟），跳过刷新")
+            return
+        }
+        runBlocking {
+            runCatching {
+                WtLoginClient(client).renewSession()
+                saveAndroidSession(uin, client.sessionStore)
+                ServerLog.i(TAG, "uin=$uin 任务前刷新票据成功（原 p_skey 已 ${ageMs / 60_000} 分钟）")
+            }.onFailure { err ->
+                ServerLog.w(TAG, "uin=$uin 任务前刷新票据失败：${err.message}")
+            }
+        }
+    }
+
     private fun nextRefreshAt(): Long {
         val span = REFRESH_MIN_MS + Random.nextLong(REFRESH_MAX_MS - REFRESH_MIN_MS)
         val jitter = (span * REFRESH_JITTER_RATIO).toLong()
@@ -589,9 +610,10 @@ class AcidifySessionManager(
         private const val TAG = "SSO_MGR"
         private const val REAL_DEVICE_NAME = "24091RPADC"
         private const val REFRESH_TICK_MS = 5 * 60 * 1000L
-        private const val REFRESH_MIN_MS = 12 * 60 * 60 * 1000L
-        private const val REFRESH_MAX_MS = 24 * 60 * 60 * 1000L
+        private const val REFRESH_MIN_MS = 3 * 24 * 60 * 60 * 1000L
+        private const val REFRESH_MAX_MS = 5 * 24 * 60 * 60 * 1000L
         private const val REFRESH_JITTER_RATIO = 0.05
+        private const val PSKEY_MAX_AGE_MS = 20 * 60 * 60 * 1000L
         private const val STAGGER_MIN_MS = 30_000L
         private const val STAGGER_MAX_MS = 90_000L
         private const val WATCHDOG_INTERVAL_MS = 2 * 60 * 1000L       // 2 分钟巡检

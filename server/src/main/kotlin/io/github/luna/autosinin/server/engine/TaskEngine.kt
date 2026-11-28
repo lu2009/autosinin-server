@@ -41,6 +41,7 @@ class TaskEngine(
     private val transport: ProtoTransport,
     private val tickets: TicketProvider,
     friendOperator: AddFriendTask.FriendOperator = AddFriendTask.FriendOperator.NOOP,
+    private val beforeRun: ((String) -> Unit)? = null,
 ) {
     val miniGameStatus = MiniGameStatus(transport)
     val dramaSso = DramaSso(transport)
@@ -92,6 +93,7 @@ class TaskEngine(
         tasksFilter: Set<String>? = null,
         force: Boolean = false,
     ): List<TaskExecutionResult> {
+        beforeRun?.invoke(uin)
         val account = ledger.getAccount(uin) ?: return listOf(
             TaskExecutionResult(uin, "account", ok = false, detail = "账号不存在"),
         )
