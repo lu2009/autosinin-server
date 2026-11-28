@@ -21,6 +21,8 @@ data class DeviceProfile(
     val incremental: String = "OS2.0.5.0.ULNCNXM",
     val kernelVersion: String = "Linux version 5.10.198-android14",
     val fingerprint: String = "Redmi/rubens/rubens:14/UP1A.231005.007/OS2.0.5.0.ULNCNXM:user/release-keys",
+    val carrier: String = "中国电信",
+    val network: String = "wifi",
 ) {
     companion object {
         /** 每个账号独立的 androidId（16 位 hex），不再共用同一个常量。 */

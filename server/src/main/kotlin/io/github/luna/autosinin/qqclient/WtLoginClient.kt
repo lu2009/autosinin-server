@@ -753,9 +753,9 @@ class WtLoginClient(
 
         fun tlv141() = writeTlv(0x141) {
             writeShortBE(1)
-            writeString16("")
-            writeString16("")
-            writeString16("wifi")
+            writeString16(store.device.carrier)
+            writeShortBE(2)
+            writeString16(store.device.network)
         }
 
         fun tlv142() = writeTlv(0x142) {
@@ -769,11 +769,11 @@ class WtLoginClient(
                 writeTlv(0x52d, buildDeviceReport())
                 writeTlv(0x124) {
                     writeString16("android")
-                    writeString16("14")
+                    writeString16(store.device.androidVersion)
                     writeShortBE(2)
-                    writeString16("")
+                    writeString16(store.device.carrier)
                     writeIntBE(4)
-                    write("wifi".toByteArray(Charsets.UTF_8))
+                    write(store.device.network.toByteArray(Charsets.UTF_8))
                 }
                 writeTlv(0x128) {
                     writeShortBE(0)
@@ -781,7 +781,7 @@ class WtLoginClient(
                     writeIntBE(0)
                     writeString16(appInfo.os)
                     writeShortBE(store.guid.size); write(store.guid)
-                    writeString16("Xiaomi")
+                    writeString16(store.device.brand)
                 }
                 writeTlv(0x16e, store.device.model.toByteArray(Charsets.UTF_8))
             }.build()
