@@ -21,7 +21,8 @@ COPY --from=builder /build/server/build/install/server /app
 COPY --from=web-builder /web/dist /app/static
 RUN mkdir -p /app/data/sessions
 EXPOSE 8080
-ENV AUTOSININ_PORT=8080 \
+ENV TZ=Asia/Shanghai \
+    AUTOSININ_PORT=8080 \
     AUTOSININ_HOST=0.0.0.0 \
     AUTOSININ_DB_PATH=/app/data/autosinin.db \
     AUTOSININ_SESSION_DIR=/app/data/sessions

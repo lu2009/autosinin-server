@@ -1,6 +1,7 @@
 package io.github.luna.autosinin.protocol
 
 import java.text.SimpleDateFormat
+import java.util.TimeZone
 import java.util.Date
 import java.util.Locale
 
@@ -37,7 +38,11 @@ object NovelReport {
     fun template(): ByteArray = hexToBytes(TEMPLATE_HEX)
 
     private val timeFmt = object : ThreadLocal<SimpleDateFormat>() {
-        override fun initialValue() = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.CHINA)
+        override fun initialValue() = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.CHINA).apply {
+            // 报文里声明的是 timezone=+8,id:Asia/Shanghai，格式化时间必须一致，
+            // 不能依赖容器时区（容器默认 UTC，会比真机早 8 小时）
+            timeZone = TimeZone.getTimeZone("Asia/Shanghai")
+        }
     }
 
     fun build(uin: String, session: String, nowMs: Long, durationMs: Int = 180_000): ByteArray {

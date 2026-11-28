@@ -90,6 +90,7 @@ class MiniGameArena(
             return null
         }
         val text = r.bytes.toString(Charsets.UTF_8)
+        ServerLog.i(TAG, "uin=$uin createRoom appId=$appId rsp(${text.length})=$text")
         val room = parseRoom(text) ?: return null
         return room.copy(expireAt = System.currentTimeMillis() + room.validMinutes * 60_000L)
     }

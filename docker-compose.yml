@@ -6,6 +6,7 @@ services:
     ports:
       - "8080:8080"
     environment:
+      TZ: "Asia/Shanghai"
       AUTOSININ_PORT: "8080"
       AUTOSININ_HOST: "0.0.0.0"
       AUTOSININ_DB_PATH: "/app/data/autosinin.db"
