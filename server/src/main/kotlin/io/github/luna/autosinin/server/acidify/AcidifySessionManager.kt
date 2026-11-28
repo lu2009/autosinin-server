@@ -313,8 +313,10 @@ class AcidifySessionManager(
             signClient = QsignClient(signUrl),
             scope = scope,
             onOffline = { reason ->
-                ServerLog.w(TAG, "uin=$uin went offline: $reason")
-                scheduleRecovery(uin, reason)
+                // 扫码登录时 client 是用占位 uin "0" 构造的，登录完成后 store.uin 才是真实值
+                val realUin = store.uin.takeIf { it > 0L }?.toString() ?: uin
+                ServerLog.w(TAG, "uin=$realUin went offline: $reason")
+                scheduleRecovery(realUin, reason)
             },
         )
     }
