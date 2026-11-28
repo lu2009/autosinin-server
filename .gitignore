@@ -14,3 +14,6 @@ node_modules/data/
 *.session.json
 sign-server/
 node_modules/
+
+# TypeScript 增量编译缓存（tsc -b 生成）
+*.tsbuildinfo
