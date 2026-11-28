@@ -1,5 +1,6 @@
-import { Plus, ShieldAlert, Server, X } from 'lucide-react';
-import { AccountDto, HealthDto, SignHealthDto, qqAvatarUrl } from '../api';
+import { useEffect, useState } from 'react';
+import { Clock, Plus, ShieldAlert, Server, X } from 'lucide-react';
+import { AccountDto, HealthDto, SchedulerDto, SignHealthDto, qqAvatarUrl } from '../api';
 import { ActivityRing } from './ActivityRing';
 
 interface SidebarProps {
@@ -11,6 +12,8 @@ interface SidebarProps {
   signHealth?: SignHealthDto;
   mobileOpen?: boolean;
   onCloseMobile?: () => void;
+  scheduler?: SchedulerDto;
+  onSaveSchedule: (start: string, end: string) => Promise<void>;
 }
 
 export function Sidebar({
@@ -22,8 +25,41 @@ export function Sidebar({
   signHealth,
   mobileOpen = false,
   onCloseMobile,
+  scheduler,
+  onSaveSchedule,
 }: SidebarProps) {
   const signOk = Boolean(signHealth?.configured && signHealth?.healthy);
+  const [editingSchedule, setEditingSchedule] = useState(false);
+  const [startInput, setStartInput] = useState('09:00');
+  const [endInput, setEndInput] = useState('11:00');
+  const [savingSchedule, setSavingSchedule] = useState(false);
+
+  useEffect(() => {
+    if (!scheduler) return;
+    setStartInput(scheduler.windowStart);
+    setEndInput(scheduler.windowEnd);
+  }, [scheduler?.windowStart, scheduler?.windowEnd]);
+
+  const handleSaveSchedule = async () => {
+    setSavingSchedule(true);
+    try {
+      await onSaveSchedule(startInput, endInput);
+      setEditingSchedule(false);
+    } finally {
+      setSavingSchedule(false);
+    }
+  };
+
+  const formatNext = (ts?: number) => {
+    if (!ts) return '未排期';
+    const d = new Date(ts);
+    const now = new Date();
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    return d.toDateString() === now.toDateString()
+      ? `今天 ${hh}:${mm}`
+      : `${d.getMonth() + 1}月${d.getDate()}日 ${hh}:${mm}`;
+  };
 
   const content = (
     <aside
@@ -154,6 +190,68 @@ export function Sidebar({
               </button>
             );
           })
+        )}
+      </div>
+
+      <div className="border-t px-3 py-3" style={{ borderColor: 'var(--apple-separator)' }}>
+        <div className="flex items-center justify-between">
+          <span
+            className="flex items-center gap-1 text-[11px] font-medium"
+            style={{ color: 'var(--apple-text-tertiary)' }}
+          >
+            <Clock className="h-3 w-3" />
+            每日调度
+          </span>
+          <button
+            onClick={() => setEditingSchedule((v) => !v)}
+            className="text-[11px] font-medium"
+            style={{ color: 'var(--apple-blue)' }}
+          >
+            {editingSchedule ? '取消' : '设置'}
+          </button>
+        </div>
+        {editingSchedule ? (
+          <div className="mt-2 space-y-2">
+            <div className="flex items-center gap-1.5">
+              <input
+                type="time"
+                value={startInput}
+                onChange={(e) => setStartInput(e.target.value)}
+                className="w-full rounded-lg px-2 py-1.5 text-[12px] outline-none"
+                style={{ backgroundColor: 'var(--apple-surface-secondary)' }}
+              />
+              <span className="text-[11px]" style={{ color: 'var(--apple-text-tertiary)' }}>
+                –
+              </span>
+              <input
+                type="time"
+                value={endInput}
+                onChange={(e) => setEndInput(e.target.value)}
+                className="w-full rounded-lg px-2 py-1.5 text-[12px] outline-none"
+                style={{ backgroundColor: 'var(--apple-surface-secondary)' }}
+              />
+            </div>
+            <button
+              onClick={handleSaveSchedule}
+              disabled={savingSchedule}
+              className="w-full rounded-lg py-1.5 text-[12px] font-semibold text-white disabled:opacity-50"
+              style={{ backgroundColor: 'var(--apple-blue)' }}
+            >
+              {savingSchedule ? '保存中…' : '保存'}
+            </button>
+            <div className="text-[10px]" style={{ color: 'var(--apple-text-tertiary)' }}>
+              区间内随机选取一个时刻执行
+            </div>
+          </div>
+        ) : (
+          <div className="mt-1.5 flex items-baseline justify-between">
+            <span className="text-[13px] font-semibold">
+              {scheduler?.windowStart ?? '--:--'} – {scheduler?.windowEnd ?? '--:--'}
+            </span>
+            <span className="text-[11px]" style={{ color: 'var(--apple-text-tertiary)' }}>
+              {formatNext(scheduler?.nextRunAt)}
+            </span>
+          </div>
         )}
       </div>
 

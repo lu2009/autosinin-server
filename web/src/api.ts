@@ -102,6 +102,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+export interface SchedulerDto {
+  enabled: boolean;
+  running: boolean;
+  windowStart: string;
+  windowEnd: string;
+  lastRunAt: number;
+  nextRunAt: number;
+  lastSummary: string;
+}
+
 export const api = {
   health: () => request<HealthDto>('/health'),
   signHealth: () => request<SignHealthDto>('/api/sign/health'),
@@ -144,6 +154,13 @@ export const api = {
     }),
   pollLoginState: (loginId: string) =>
     request<QrLoginStateDto>(`/api/accounts/qr/${encodeURIComponent(loginId)}`),
+  scheduler: () => request<SchedulerDto>('/api/scheduler'),
+  setSchedule: (windowStart: string, windowEnd: string) =>
+    request<SchedulerDto>('/api/scheduler/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ windowStart, windowEnd }),
+    }),
 };
 
 export function qqAvatarUrl(uin: string): string {

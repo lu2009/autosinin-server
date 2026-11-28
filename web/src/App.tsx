@@ -25,6 +25,11 @@ export default function App() {
   const signHealthQuery = useQuery({ queryKey: ['signHealth'], queryFn: api.signHealth, refetchInterval: 15000 });
   const tasksQuery = useQuery({ queryKey: ['tasks'], queryFn: api.tasks });
   const accountsQuery = useQuery({ queryKey: ['accounts'], queryFn: api.accounts, refetchInterval: 8000 });
+  const schedulerQuery = useQuery({
+    queryKey: ['scheduler'],
+    queryFn: api.scheduler,
+    refetchInterval: 30000,
+  });
 
   const accounts = accountsQuery.data ?? [];
   useEffect(() => {
@@ -132,6 +137,12 @@ export default function App() {
     <div className="flex h-screen w-screen overflow-hidden">
       <Sidebar
         accounts={accounts}
+        scheduler={schedulerQuery.data}
+        onSaveSchedule={async (start, end) => {
+          await api.setSchedule(start, end);
+          await schedulerQuery.refetch();
+          showToast(`每日调度已设为 ${start} – ${end}`);
+        }}
         selectedUin={selectedUin}
         onSelect={setSelectedUin}
         onAddAccount={() => {
