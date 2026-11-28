@@ -72,6 +72,8 @@ class SsoClient(
     @Volatile
     private var closedByUser = false
 
+    private val pushReplyWarned = java.util.concurrent.atomic.AtomicBoolean(false)
+
     /** 掉线只通知一次：心跳、推送、readLoop finally 三方用 CAS 抢。 */
     private val offlineNotified = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -159,6 +161,35 @@ class SsoClient(
      * 服务端主动推送：目前主要处理踢下线，其余仅记录（首次若干条）。
      * QQ 的踢人命令：MessageSvc.PushForceOffline / ReqMSFOffline / KickNT。
      */
+    private suspend fun sendPacketNoWait(
+        command: String,
+        payload: ByteArray,
+        sequence: Int,
+        requestType: RequestType = RequestType.D2Auth,
+        encryptType: EncryptType = EncryptType.WithD2Key,
+        ssoReservedMsgType: Int = 32,
+    ) {
+        if (!isOnline) throw IOException("SSO client is offline (cmd=$command)")
+        ensureConnected()
+        val frame = encodeSsoFrame(
+            command = command,
+            payload = payload,
+            sequence = sequence,
+            requestType = requestType,
+            encryptType = encryptType,
+            msgType = ssoReservedMsgType,
+            signValue = null,
+        )
+        writeMutex.withLock {
+            val sock = socket ?: throw IOException("SSO socket not connected")
+            withContext(Dispatchers.IO) {
+                val out = sock.getOutputStream()
+                out.write(frame)
+                out.flush()
+            }
+        }
+    }
+
     private suspend fun handleServerPush(sock: Socket, rsp: SsoResponse) {
         val hex = rsp.response.take(32).toByteArray().joinToString("") { "%02x".format(it) }
         val kick = FORCE_OFFLINE_COMMANDS.any { rsp.command.contains(it, ignoreCase = true) }
@@ -172,6 +203,29 @@ class SsoClient(
                 onOffline("server push: ${rsp.command}")
             }
             runCatching { sock.close() }
+            return
+        }
+        if (rsp.command == "ConfigPushSvc.PushReq") {
+            val payload = rsp.response
+            val ssoSeq = rsp.sequence
+            scope.launch(Dispatchers.IO) {
+                runCatching {
+                    val req = ConfigPushCodec.decodePushReq(payload)
+                    sendPacketNoWait(
+                        command = "ConfigPushSvc.PushResp",
+                        payload = ConfigPushCodec.encodePushResp(req),
+                        sequence = ssoSeq,
+                    )
+                    ServerLog.i(
+                        TAG,
+                        "uin=${sessionStore.uin} 已回复 ConfigPushSvc.PushResp type=${req.type} seq=${req.seq} ssoSeq=$ssoSeq",
+                    )
+                }.onFailure { err ->
+                    if (pushReplyWarned.compareAndSet(false, true)) {
+                        ServerLog.w(TAG, "uin=${sessionStore.uin} 回复 ConfigPushSvc.PushResp 失败: ${err.message}")
+                    }
+                }
+            }
             return
         }
         val seen = pushSeen.computeIfAbsent(rsp.command) { java.util.concurrent.atomic.AtomicInteger() }
