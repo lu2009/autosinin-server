@@ -103,6 +103,7 @@ class WtLoginClient(
             payload = req,
             requestType = RequestType.D2Auth,
             encryptType = EncryptType.WithD2Key,
+            allowOffline = true,
         )
         check(rsp.retCode == 0) { "SsoInfoSync failed retCode=${rsp.retCode}: ${rsp.extra}" }
         val regInfoResp = readPbBytes(rsp.response, 7)
@@ -475,6 +476,7 @@ class WtLoginClient(
             payload = packet,
             requestType = RequestType.D2Auth,
             encryptType = EncryptType.WithEmptyKey,
+            allowOffline = true,
         )
         check(rsp.retCode == 0) { "$command SSO retCode=${rsp.retCode}: ${rsp.extra}" }
 

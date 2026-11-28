@@ -191,7 +191,11 @@ class SsoClient(
         requestType: RequestType = RequestType.D2Auth,
         encryptType: EncryptType = EncryptType.WithD2Key,
         ssoReservedMsgType: Int = 32,
+        allowOffline: Boolean = false,
     ): SsoResponse {
+        if (!isOnline && !allowOffline) {
+            throw IOException("SSO client is offline (cmd=$command)")
+        }
         ensureConnected()
         val seq = nextSeq()
         val secureInfo = if (command in SIGN_REQUIRED_COMMANDS) {
