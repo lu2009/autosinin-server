@@ -402,14 +402,15 @@ class AcidifySessionManager(
                     if (err is NeedVerification) {
                         needVerify[uin] = err.message ?: "需要人工验证"
                         ServerLog.w(TAG, "uin=$uin 自动恢复停止：${err.message}")
+                        clients.remove(uin)?.close()
                         return@launch
                     }
                     ServerLog.w(TAG, "uin=$uin 第 ${attempt + 1} 次恢复失败：${err?.message}")
                     backoff = (backoff * 2).coerceAtMost(MAX_BACKOFF_MS)
                 }
                 ServerLog.w(TAG, "uin=$uin 自动恢复放弃（已尝试 $MAX_RECOVERY_ATTEMPTS 次）")
-                // 清掉残留的离线客户端，避免 watchdog 反复命中
-                clients.remove(uin)
+                // 清掉残留离线客户端并关连接，避免 watchdog 反复命中与半开 socket 泄漏
+                clients.remove(uin)?.close()
             } finally {
                 recoveryJobs.remove(uin)
             }

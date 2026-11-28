@@ -72,9 +72,8 @@ class SsoClient(
     @Volatile
     private var closedByUser = false
 
-    /** 已通过推送通知过掉线，避免 finally 重复通知。 */
-    @Volatile
-    private var offlineNotified = false
+    /** 掉线只通知一次：心跳、推送、readLoop finally 三方用 CAS 抢。 */
+    private val offlineNotified = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** 推送命令去重计数，避免消息类推送刷屏。 */
     private val pushSeen = ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
@@ -93,7 +92,7 @@ class SsoClient(
             }
             closeSocketOnly()
             closedByUser = false
-            offlineNotified = false
+            offlineNotified.set(false)
             val sock = Socket()
             sock.keepAlive = true
             sock.tcpNoDelay = true
@@ -144,7 +143,7 @@ class SsoClient(
             pending.clear()
             runCatching { sock.close() }
             // 秒级自愈：不是 close() 主动关闭、也不是推送已通知过，就立刻上报掉线
-            if (wasOnline && !closedByUser && !offlineNotified) {
+            if (wasOnline && !closedByUser && offlineNotified.compareAndSet(false, true)) {
                 onOffline("readLoop closed")
             }
         }
@@ -162,9 +161,10 @@ class SsoClient(
                 TAG,
                 "uin=${sessionStore.uin} 收到踢下线推送 cmd=${rsp.command} ret=${rsp.retCode} extra=${rsp.extra} hex=$hex",
             )
-            offlineNotified = true
             isOnline = false
-            onOffline("server push: ${rsp.command}")
+            if (offlineNotified.compareAndSet(false, true)) {
+                onOffline("server push: ${rsp.command}")
+            }
             runCatching { sock.close() }
             return
         }
@@ -280,7 +280,11 @@ class SsoClient(
                 val silentMs = System.currentTimeMillis() - lastOkAt
                 if (socket?.isClosed == true || silentMs >= HEARTBEAT_WAIT_TIMEOUT_MS) {
                     isOnline = false
-                    onOffline("heartbeat silent ${silentMs}ms (limit ${HEARTBEAT_WAIT_TIMEOUT_MS}ms)")
+                    if (offlineNotified.compareAndSet(false, true)) {
+                        onOffline("heartbeat silent ${silentMs}ms (limit ${HEARTBEAT_WAIT_TIMEOUT_MS}ms)")
+                    }
+                    // 主动关掉半开连接，让 readLoop 退出、资源及时释放
+                    runCatching { socket?.close() }
                     break
                 }
                 ServerLog.w(
