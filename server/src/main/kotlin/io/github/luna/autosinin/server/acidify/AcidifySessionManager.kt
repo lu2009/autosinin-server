@@ -108,6 +108,7 @@ class AcidifySessionManager(
             WtLoginClient(sso).recoverSession()
             clients[uin]?.close()
             clients[uin] = sso
+            needVerify.remove(uin)
             saveAndroidSession(uin, store)
             ledger.upsertAccount(AccountInfo(uin = uin, nickname = uin, enabled = true))
             ServerLog.i(TAG, "uin=$uin android session restored and logged in")
@@ -256,6 +257,7 @@ class AcidifySessionManager(
                 )
                 clients[uinStr]?.close()
                 clients[uinStr] = sso
+                needVerify.remove(uinStr)
                 saveAndroidSession(uinStr, store)
                 ledger.upsertAccount(AccountInfo(uin = uinStr, nickname = uinStr, enabled = true))
                 qrSessions[loginId] = QrLoginStateDto(qrId = loginId, status = "LOGGED_IN", uin = uinStr)
@@ -354,7 +356,10 @@ class AcidifySessionManager(
             while (isActive) {
                 delay(WATCHDOG_INTERVAL_MS)
                 for ((uin, client) in clients.entries.toList()) {
-                    if (!client.isOnline && recoveryJobs[uin]?.isActive != true) {
+                    if (!client.isOnline &&
+                        recoveryJobs[uin]?.isActive != true &&
+                        !needVerify.containsKey(uin)
+                    ) {
                         scheduleRecovery(uin, "watchdog: client offline")
                     }
                 }
@@ -368,7 +373,11 @@ class AcidifySessionManager(
      */
     private fun scheduleRecovery(uin: String, reason: String) {
         if (recoveryJobs[uin]?.isActive == true) return
-        needVerify.remove(uin)
+        // 熔断：已判定需要人工验证的账号不再自动重试，避免每 2 分钟打一轮登录推高风险
+        if (needVerify.containsKey(uin)) {
+            ServerLog.i(TAG, "uin=$uin 处于需人工验证状态，跳过自动恢复（reason=$reason）")
+            return
+        }
         recoveryJobs[uin] = scope.launch {
             var backoff = 2_000L
             try {
@@ -376,6 +385,7 @@ class AcidifySessionManager(
                     delay(backoff)
                     val outcome = runCatching { recoverOnce(uin) }
                     outcome.onSuccess {
+                        needVerify.remove(uin)
                         ServerLog.i(TAG, "uin=$uin 自动恢复成功（第 ${attempt + 1} 次尝试，reason=$reason）")
                         return@launch
                     }
@@ -389,6 +399,8 @@ class AcidifySessionManager(
                     backoff = (backoff * 2).coerceAtMost(MAX_BACKOFF_MS)
                 }
                 ServerLog.w(TAG, "uin=$uin 自动恢复放弃（已尝试 $MAX_RECOVERY_ATTEMPTS 次）")
+                // 清掉残留的离线客户端，避免 watchdog 反复命中
+                clients.remove(uin)
             } finally {
                 recoveryJobs.remove(uin)
             }

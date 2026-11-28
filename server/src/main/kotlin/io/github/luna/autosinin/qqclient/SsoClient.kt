@@ -68,6 +68,17 @@ class SsoClient(
     var isOnline: Boolean = false
         internal set
 
+    /** close() 主动关闭：readLoop 退出时不应再触发掉线回调。 */
+    @Volatile
+    private var closedByUser = false
+
+    /** 已通过推送通知过掉线，避免 finally 重复通知。 */
+    @Volatile
+    private var offlineNotified = false
+
+    /** 推送命令去重计数，避免消息类推送刷屏。 */
+    private val pushSeen = ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
+
     fun nextSeq(): Int = seqGen.incrementAndGet()
 
     suspend fun ensureConnected() {
@@ -81,6 +92,8 @@ class SsoClient(
                 return
             }
             closeSocketOnly()
+            closedByUser = false
+            offlineNotified = false
             val sock = Socket()
             sock.keepAlive = true
             sock.tcpNoDelay = true
@@ -108,7 +121,11 @@ class SsoClient(
                 runCatching {
                     val rsp = decodeSsoFrame(frame, sessionStore.wloginSigs.d2Key)
                     val waiter = pending.remove(rsp.sequence)
-                    waiter?.complete(rsp)
+                    if (waiter != null) {
+                        waiter.complete(rsp)
+                    } else {
+                        handleServerPush(sock, rsp)
+                    }
                 }.onFailure { err ->
                     ServerLog.w(TAG, "uin=${sessionStore.uin} decode SSO frame failed (len=${frame.size}): ${err.javaClass.simpleName}: ${err.message}")
                 }
@@ -120,11 +137,44 @@ class SsoClient(
                 ServerLog.w(TAG, "uin=${sessionStore.uin} SSO readLoop error: ${e.message}")
             }
         } finally {
+            val wasOnline = isOnline
             isOnline = false
             val err = IOException("SSO connection closed")
             pending.values.forEach { it.completeExceptionally(err) }
             pending.clear()
             runCatching { sock.close() }
+            // 秒级自愈：不是 close() 主动关闭、也不是推送已通知过，就立刻上报掉线
+            if (wasOnline && !closedByUser && !offlineNotified) {
+                onOffline("readLoop closed")
+            }
+        }
+    }
+
+    /**
+     * 服务端主动推送：目前主要处理踢下线，其余仅记录（首次若干条）。
+     * QQ 的踢人命令：MessageSvc.PushForceOffline / ReqMSFOffline / KickNT。
+     */
+    private suspend fun handleServerPush(sock: Socket, rsp: SsoResponse) {
+        val hex = rsp.response.take(32).toByteArray().joinToString("") { "%02x".format(it) }
+        val kick = FORCE_OFFLINE_COMMANDS.any { rsp.command.contains(it, ignoreCase = true) }
+        if (kick) {
+            ServerLog.w(
+                TAG,
+                "uin=${sessionStore.uin} 收到踢下线推送 cmd=${rsp.command} ret=${rsp.retCode} extra=${rsp.extra} hex=$hex",
+            )
+            offlineNotified = true
+            isOnline = false
+            onOffline("server push: ${rsp.command}")
+            runCatching { sock.close() }
+            return
+        }
+        val seen = pushSeen.computeIfAbsent(rsp.command) { java.util.concurrent.atomic.AtomicInteger() }
+        if (seen.incrementAndGet() <= PUSH_LOG_LIMIT) {
+            ServerLog.i(
+                TAG,
+                "uin=${sessionStore.uin} 服务端推送 cmd=${rsp.command} seq=${rsp.sequence} " +
+                    "ret=${rsp.retCode} len=${rsp.response.size} hex=$hex",
+            )
         }
     }
 
@@ -242,6 +292,7 @@ class SsoClient(
     }
 
     fun close() {
+        closedByUser = true
         isOnline = false
         heartbeatJob?.cancel()
         closeSocketOnly()
@@ -423,6 +474,8 @@ class SsoClient(
     companion object {
         private const val TAG = "SSO"
         private const val SSO_HOST = "msfwifi.3g.qq.com"
+        private val FORCE_OFFLINE_COMMANDS = listOf("PushForceOffline", "ReqMSFOffline", "KickNT")
+        private const val PUSH_LOG_LIMIT = 5
         // 真机实测：中位 29.96s、σ≈1.25s（±4%）
         private const val HEARTBEAT_INTERVAL_MS = 28_800L
         private const val HEARTBEAT_JITTER_MS = 2_400L
