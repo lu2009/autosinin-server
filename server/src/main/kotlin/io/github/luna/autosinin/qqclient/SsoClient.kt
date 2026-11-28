@@ -96,6 +96,11 @@ class SsoClient(
             val sock = Socket()
             sock.keepAlive = true
             sock.tcpNoDelay = true
+            // 读超时防 NAT 半开：长连接被中间设备静默丢弃后，read 会一直阻塞，
+            // TCP keepalive 默认要 2 小时才探测。心跳 30s 一轮、服务端会回包，
+            // 正常入站间隔 ≤30s，90s 有 3 倍余量。
+            // 注意：这会把判死窗口从 QQ 的 180s 收紧到 90s，如需完全对齐改为 180_000L。
+            sock.soTimeout = SOCKET_READ_TIMEOUT_MS
             withContext(Dispatchers.IO) {
                 sock.connect(InetSocketAddress(SSO_HOST, SSO_PORT), 10_000)
             }
@@ -480,6 +485,7 @@ class SsoClient(
         private const val SSO_HOST = "msfwifi.3g.qq.com"
         private val FORCE_OFFLINE_COMMANDS = listOf("PushForceOffline", "ReqMSFOffline", "KickNT")
         private const val PUSH_LOG_LIMIT = 5
+        private const val SOCKET_READ_TIMEOUT_MS = 90_000
         // 真机实测：中位 29.96s、σ≈1.25s（±4%）
         private const val HEARTBEAT_INTERVAL_MS = 28_800L
         private const val HEARTBEAT_JITTER_MS = 2_400L
