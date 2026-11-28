@@ -23,6 +23,10 @@ import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.io.FileOutputStream
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -460,10 +464,34 @@ class AcidifySessionManager(
     fun pendingVerifications(): Map<String, String> = needVerify.toMap()
 
     private fun saveAndroidSession(uin: String, store: AndroidSessionStore) {
-        sessionDir.mkdirs()
         val file = File(sessionDir, "$uin.android.session.json")
-        file.writeText(store.toJson(), Charsets.UTF_8)
+        writeTextAtomically(file, store.toJson())
         saveDeviceProfile(uin, store)
+    }
+
+    private fun writeTextAtomically(target: File, content: String) {
+        val dir = target.parentFile ?: File(".")
+        dir.mkdirs()
+        val tmp = File(dir, "${target.name}.${System.nanoTime()}.tmp")
+        try {
+            FileOutputStream(tmp).use { fos ->
+                fos.write(content.toByteArray(Charsets.UTF_8))
+                fos.fd.sync()
+            }
+            try {
+                Files.move(
+                    tmp.toPath(),
+                    target.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE,
+                )
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+        } catch (e: Throwable) {
+            tmp.delete()
+            throw e
+        }
     }
 
     @Serializable
@@ -488,7 +516,8 @@ class AcidifySessionManager(
                 deviceName = store.deviceName,
                 device = store.device,
             )
-            File(dir, "$uin.device.json").writeText(DEVICE_JSON.encodeToString(StoredDeviceProfile.serializer(), profile), Charsets.UTF_8)
+            val json = DEVICE_JSON.encodeToString(StoredDeviceProfile.serializer(), profile)
+            writeTextAtomically(File(dir, "$uin.device.json"), json)
         }
     }
 
