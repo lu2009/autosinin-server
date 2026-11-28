@@ -195,6 +195,8 @@ class AcidifySessionManager(
                 val uinStr = res.uin.toString()
                 clients[uinStr]?.close()
                 clients[uinStr] = sso
+                // 手动登录成功即解除熔断，否则该账号后续掉线将不再自动恢复
+                needVerify.remove(uinStr)
                 saveAndroidSession(uinStr, store)
                 ledger.upsertAccount(AccountInfo(uin = uinStr, nickname = uinStr, enabled = true))
                 qrSessions[qrId] = QrLoginStateDto(qrId = qrId, status = "LOGGED_IN", uin = uinStr)
