@@ -26,6 +26,10 @@ import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -318,8 +322,8 @@ fun Application.configureAutoSininModule(
             val uin = call.parameters["uin"].orEmpty()
             val req = runCatching { call.receive<RunTasksRequest>() }.getOrDefault(RunTasksRequest())
             val filter = req.tasks.map { it.trim() }.filter { it.isNotBlank() }.toSet().ifEmpty { null }
-            val results: List<TaskExecutionResult> = engine.runAccount(uin, filter, req.force)
-            call.respond(results)
+            backgroundScope.launch { engine.runAccount(uin, filter, req.force) }
+            call.respond(RunAcceptedResponse(true, "已开始执行，任务间有随机间隔，稍后刷新查看结果"))
         }
 
         post("/api/accounts/{uin}/reconcile") {
@@ -410,8 +414,12 @@ fun Application.configureAutoSininModule(
 
         post("/api/scheduler/run") {
             val force = call.request.queryParameters["force"]?.toBooleanStrictOrNull() ?: false
-            val results = scheduler.triggerNow(force = force)
-            call.respond(results)
+            if (scheduler.status().running) {
+                call.respond(RunAcceptedResponse(false, "已在执行中，请稍后刷新查看结果"))
+                return@post
+            }
+            backgroundScope.launch { scheduler.triggerNow(force = force) }
+            call.respond(RunAcceptedResponse(true, "已开始执行全部账号，稍后刷新查看结果"))
         }
 
         get("/api/runs") {
@@ -474,6 +482,14 @@ private val TASK_CATALOG: List<TaskMetaDto> = listOf(
     TaskMetaDto("farm_login", "每日登录QQ经典农场", "小游戏与广告", 1037),
     TaskMetaDto("video_ad", "完成视频任务获得加速时长", "小游戏与广告", 1021),
     TaskMetaDto("add_friend", "加一位好友", "社交关系", 23),
+)
+
+private val backgroundScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+@Serializable
+data class RunAcceptedResponse(
+    val accepted: Boolean,
+    val message: String,
 )
 
 private val TIME_PATTERN = Regex("^([01]?\\d|2[0-3]):[0-5]\\d$")

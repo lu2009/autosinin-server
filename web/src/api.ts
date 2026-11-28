@@ -102,6 +102,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+export interface RunAcceptedDto {
+  accepted: boolean;
+  message: string;
+}
+
 export interface SchedulerDto {
   enabled: boolean;
   running: boolean;
@@ -130,7 +135,7 @@ export const api = {
   },
   logs: (limit = 120) => request<string[]>(`/api/logs?limit=${limit}`),
   runTasks: (uin: string, tasks: string[] = [], force = false) =>
-    request<TaskExecutionResult[]>(`/api/accounts/${encodeURIComponent(uin)}/run`, {
+    request<RunAcceptedDto>(`/api/accounts/${encodeURIComponent(uin)}/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tasks, force }),

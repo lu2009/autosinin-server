@@ -44,6 +44,7 @@ class TaskEngine(
     private val tickets: TicketProvider,
     friendOperator: AddFriendTask.FriendOperator = AddFriendTask.FriendOperator.NOOP,
     private val beforeRun: ((String) -> Unit)? = null,
+    private val gapRangeMs: LongRange = 3_000L..15_000L,
 ) {
     val miniGameStatus = MiniGameStatus(transport)
     val dramaSso = DramaSso(transport)
@@ -73,9 +74,14 @@ class TaskEngine(
     }
 
     private fun pause(kind: String, uin: String) {
-        val ms = Random.nextLong(TASK_GAP_MIN_MS, TASK_GAP_MAX_MS)
+        if (gapRangeMs.isEmpty() || gapRangeMs.last <= 0L) return
+        val ms = Random.nextLong(gapRangeMs.first, gapRangeMs.last + 1)
         ServerLog.i(TAG, "uin=$uin $kind 间隔 ${ms}ms")
-        runCatching { Thread.sleep(ms) }
+        try {
+            Thread.sleep(ms)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
     }
 
     /**
@@ -276,8 +282,6 @@ class TaskEngine(
 
     companion object {
         private const val TAG = "ENGINE"
-        private const val TASK_GAP_MIN_MS = 3_000L
-        private const val TASK_GAP_MAX_MS = 15_000L
         val DEFAULT_TASKS = listOf(
             "vip_sign",
             "daily_cards",

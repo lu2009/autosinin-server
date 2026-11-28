@@ -22,7 +22,7 @@ class ServerRoutesTest {
     fun accountTicketAndRunRoutesWork() = testApplication {
         val ledger = SqliteAccountLedger(":memory:")
         val transport = StubProtoTransport()
-        val engine = TaskEngine(ledger, transport, ledger)
+        val engine = TaskEngine(ledger, transport, ledger, gapRangeMs = 0L..0L)
         val scheduler = TaskScheduler(ledger, engine, enabled = false)
 
         application {
@@ -54,7 +54,9 @@ class ServerRoutesTest {
             setBody("""{"tasks":["vip_sign"],"force":true}""")
         }
         assertEquals(HttpStatusCode.OK, runResp.status)
-        assertTrue(runResp.bodyAsText().contains("vip_sign"))
+        assertTrue(runResp.bodyAsText().contains("accepted"))
+
+        engine.runAccount("987654321", setOf("vip_sign"), force = true)
 
         val ledgerResp = client.get("/api/accounts/987654321/ledger")
         assertEquals(HttpStatusCode.OK, ledgerResp.status)

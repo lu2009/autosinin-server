@@ -82,9 +82,8 @@ export default function App() {
     if (!selectedUin) return;
     setRunningKey('__all__');
     try {
-      const results = await api.runTasks(selectedUin, [], force);
-      const okCount = results.filter((r) => r.ok).length;
-      showToast(`已执行 ${results.length} 项任务，成功 ${okCount} 项`);
+      const res = await api.runTasks(selectedUin, [], force);
+      showToast(res.message);
       await refreshAccountData(selectedUin);
     } catch (err) {
       showToast(err instanceof Error ? err.message : '执行失败');
@@ -97,9 +96,8 @@ export default function App() {
     if (!selectedUin) return;
     setRunningKey(taskKey);
     try {
-      const results = await api.runTasks(selectedUin, [taskKey], true);
-      const first = results[0];
-      showToast(first ? `${taskKey}: ${first.detail}` : `${taskKey} 已执行`);
+      const res = await api.runTasks(selectedUin, [taskKey], true);
+      showToast(res.message);
       await refreshAccountData(selectedUin);
     } catch (err) {
       showToast(err instanceof Error ? err.message : '执行失败');

@@ -206,7 +206,7 @@ class ProtocolMigrationTest {
         val day = AccountLedger.todayKey()
         ledger.recordTaskState("123456", day, "feed_read", TaskState.PENDING, "waiting 0x9172")
 
-        val engine = TaskEngine(ledger, transport, ledger)
+        val engine = TaskEngine(ledger, transport, ledger, gapRangeMs = 0L..0L)
         val promoted = engine.reconcilePending("123456")
         assertEquals(1, promoted.size)
         assertEquals(TaskState.DONE, ledger.getTaskEntry("123456", day, "feed_read")?.state)
