@@ -187,66 +187,58 @@ class SsoClient(
     }
 
     /**
-     * 心跳节奏对齐真机实测（Redmi K50 / QQ 9.x）：
-     *  - 周期 29.96s 中位、σ≈1.25s（±4%），这里取 28.8~31.2s；
-     *  - 失败不立刻判死：按实测的"补连"节奏先补 2s、再补 5s，仍失败才离线。
+     * 心跳策略对齐 QQ 自身默认值（从 APK 字节码解出）：
+     *  - msf_preHeartBeatTimeInterval  = 10s（活跃间隔）
+     *  - msf_heartBeatWaitTimeInterval = 180s（等待窗口，超时才判失联）
+     *  - msf_ExptionCountToCloseHeartbeat = 50（异常累计阈值）
+     * 所以：单次失败绝不断线，只有连续静默超过 180s（或 socket 关闭）才判离线。
      */
     fun startHeartbeat() {
         heartbeatJob?.cancel()
         heartbeatJob = scope.launch(Dispatchers.IO) {
             var beats = 0
+            var lastOkAt = System.currentTimeMillis()
             while (isActive && isOnline) {
                 delay(HEARTBEAT_INTERVAL_MS + Random.nextLong(HEARTBEAT_JITTER_MS))
                 beats++
 
-                if (!beatWithRetry()) {
+                val ok = runCatching {
+                    sendPacket(
+                        command = "Heartbeat.Alive",
+                        payload = byteArrayOf(0, 0, 0, 4),
+                        requestType = RequestType.Simple,
+                        encryptType = EncryptType.None,
+                    ).retCode == 0
+                }.getOrElse { err ->
+                    ServerLog.w(TAG, "uin=${sessionStore.uin} heartbeat error: ${err.message}")
+                    false
+                }
+
+                if (ok) {
+                    lastOkAt = System.currentTimeMillis()
+                    if (beats % LONG_BEAT_EVERY == 0) {
+                        runCatching {
+                            sendPacket(
+                                command = "trpc.qq_new_tech.status_svc.StatusService.SsoHeartBeat",
+                                payload = PbEdit.varintField(1, 1L),
+                            )
+                        }.onFailure { ServerLog.w(TAG, "uin=${sessionStore.uin} SsoHeartBeat error: ${it.message}") }
+                    }
+                    continue
+                }
+
+                val silentMs = System.currentTimeMillis() - lastOkAt
+                if (socket?.isClosed == true || silentMs >= HEARTBEAT_WAIT_TIMEOUT_MS) {
                     isOnline = false
-                    onOffline("heartbeat failed after ${RETRY_DELAYS_MS.size + 1} attempts")
+                    onOffline("heartbeat silent ${silentMs}ms (limit ${HEARTBEAT_WAIT_TIMEOUT_MS}ms)")
                     break
                 }
-
-                if (beats % LONG_BEAT_EVERY == 0) {
-                    val hbOk = runCatching {
-                        sendPacket(
-                            command = "trpc.qq_new_tech.status_svc.StatusService.SsoHeartBeat",
-                            payload = PbEdit.varintField(1, 1L),
-                        ).retCode == 0
-                    }.getOrElse {
-                        ServerLog.w(TAG, "uin=${sessionStore.uin} SsoHeartBeat error: ${it.message}")
-                        false
-                    }
-                    if (!hbOk && !beatWithRetry()) {
-                        isOnline = false
-                        onOffline("SsoHeartBeat failed after retries")
-                        break
-                    }
-                }
+                ServerLog.w(
+                    TAG,
+                    "uin=${sessionStore.uin} 心跳无响应，静默 ${silentMs}ms / ${HEARTBEAT_WAIT_TIMEOUT_MS}ms，继续重试",
+                )
             }
         }
-    }
-
-    /** 一次短心跳，失败按真机的补连节奏重试。 */
-    private suspend fun beatWithRetry(): Boolean {
-        suspend fun once(): Boolean = runCatching {
-            sendPacket(
-                command = "Heartbeat.Alive",
-                payload = byteArrayOf(0, 0, 0, 4),
-                requestType = RequestType.Simple,
-                encryptType = EncryptType.None,
-            ).retCode == 0
-        }.getOrElse { err ->
-            ServerLog.w(TAG, "uin=${sessionStore.uin} heartbeat error: ${err.message}")
-            false
-        }
-
-        if (once()) return true
-        for ((i, waitMs) in RETRY_DELAYS_MS.withIndex()) {
-            if (socket?.isClosed == true) return false
-            ServerLog.w(TAG, "uin=${sessionStore.uin} 心跳失败，${waitMs}ms 后补发（第 ${i + 1} 次补连）")
-            delay(waitMs)
-            if (once()) return true
-        }
-        return false
     }
 
     fun close() {
@@ -435,8 +427,8 @@ class SsoClient(
         private const val HEARTBEAT_INTERVAL_MS = 28_800L
         private const val HEARTBEAT_JITTER_MS = 2_400L
         private const val LONG_BEAT_EVERY = 10
-        // 真机失败后的补连间隔（HttpCanary 观测到 2s / 5s 量级的补发）
-        private val RETRY_DELAYS_MS = longArrayOf(2_000L, 5_000L)
+        // QQ 默认 msf_heartBeatWaitTimeInterval = 180000ms
+        private const val HEARTBEAT_WAIT_TIMEOUT_MS = 180_000L
         private const val SSO_PORT = 8080
 
         private val SSO_FIXED_BYTES = byteArrayOf(
