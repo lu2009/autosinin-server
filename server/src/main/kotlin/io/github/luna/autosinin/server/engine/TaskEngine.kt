@@ -1,5 +1,7 @@
 package io.github.luna.autosinin.server.engine
 
+import kotlin.random.Random
+
 import io.github.luna.autosinin.protocol.AddFriendTask
 import io.github.luna.autosinin.protocol.DailySignCards
 import io.github.luna.autosinin.protocol.DramaSso
@@ -62,7 +64,18 @@ class TaskEngine(
 
     fun runAllEnabled(tasksFilter: Set<String>? = null, force: Boolean = false): List<TaskExecutionResult> {
         val accounts = ledger.listAccounts(onlyEnabled = true)
-        return accounts.flatMap { runAccount(it.uin, tasksFilter, force) }
+        val results = ArrayList<TaskExecutionResult>()
+        accounts.forEachIndexed { index, account ->
+            if (index > 0) pause("account", account.uin)
+            results += runAccount(account.uin, tasksFilter, force)
+        }
+        return results
+    }
+
+    private fun pause(kind: String, uin: String) {
+        val ms = Random.nextLong(TASK_GAP_MIN_MS, TASK_GAP_MAX_MS)
+        ServerLog.i(TAG, "uin=$uin $kind 间隔 ${ms}ms")
+        runCatching { Thread.sleep(ms) }
     }
 
     /**
@@ -101,6 +114,7 @@ class TaskEngine(
         val selected = if (tasksFilter.isNullOrEmpty()) DEFAULT_TASKS else DEFAULT_TASKS.filter { it in tasksFilter }
         val remoteSnapshot = if (!force) miniGameStatus.fetchAllTasks(uin) else null
         val results = ArrayList<TaskExecutionResult>(selected.size)
+        var executed = 0
 
         for (taskKey in selected) {
             val existing = ledger.getTaskEntry(uin, day, taskKey)
@@ -134,6 +148,7 @@ class TaskEngine(
                 continue
             }
 
+            if (executed > 0) pause("task", uin)
             val startMs = System.currentTimeMillis()
             val (ok, pending, detail) = runCatching {
                 executeSingle(uin, account.qqVersion, taskKey)
@@ -168,6 +183,7 @@ class TaskEngine(
                 detail = detail,
                 durationMs = durationMs,
             )
+            executed++
         }
         return results
     }
@@ -260,6 +276,8 @@ class TaskEngine(
 
     companion object {
         private const val TAG = "ENGINE"
+        private const val TASK_GAP_MIN_MS = 3_000L
+        private const val TASK_GAP_MAX_MS = 15_000L
         val DEFAULT_TASKS = listOf(
             "vip_sign",
             "daily_cards",
