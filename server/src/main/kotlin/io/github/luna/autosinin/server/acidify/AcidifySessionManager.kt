@@ -12,9 +12,11 @@ import io.github.luna.autosinin.server.core.ServerLog
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -67,6 +69,8 @@ class AcidifySessionManager(
 
     init {
         sessionDir.mkdirs()
+        startRefreshLoop()
+        startWatchdog()
     }
 
     fun getBot(uin: String): SsoClient? = clients[uin]
@@ -100,18 +104,22 @@ class AcidifySessionManager(
                 store.deviceName = REAL_DEVICE_NAME
             }
             val sso = buildSsoClient(uin, store, defaultSignUrl)
-            val wt = WtLoginClient(sso)
-            wt.login(
-                onRequireCaptchaTicket = { url -> error("Captcha required: $url") },
-                onRequireSmsCode = { _, _, _ -> error("SMS verification required") },
-            )
+            // 启动恢复只走 a2/a1，不自动打密码登录（否则每次都推高一次风控）
+            WtLoginClient(sso).recoverSession()
             clients[uin]?.close()
             clients[uin] = sso
             saveAndroidSession(uin, store)
             ledger.upsertAccount(AccountInfo(uin = uin, nickname = uin, enabled = true))
             ServerLog.i(TAG, "uin=$uin android session restored and logged in")
         }.onFailure {
-            ServerLog.w(TAG, "uin=$uin android restore failed: ${it.javaClass.simpleName}: ${it.message}")
+            val msg = it.message.orEmpty()
+            ServerLog.w(TAG, "uin=$uin android restore failed: ${it.javaClass.simpleName}: $msg")
+            if (msg.contains("需要人工")) {
+                needVerify[uin] = msg
+                ServerLog.w(TAG, "uin=$uin 需要人工登录（已停止自动重试，避免推高风控）")
+            } else {
+                scheduleRecovery(uin, "startup restore failed: $msg")
+            }
         }
     }
 
@@ -304,9 +312,112 @@ class AcidifySessionManager(
             scope = scope,
             onOffline = { reason ->
                 ServerLog.w(TAG, "uin=$uin went offline: $reason")
+                scheduleRecovery(uin, reason)
             },
         )
     }
+
+    // ------------------------------------------------------------------
+    // 掉线自愈 + 令牌保鲜
+    // ------------------------------------------------------------------
+
+    private val recoveryJobs = ConcurrentHashMap<String, Job>()
+    private val needVerify = ConcurrentHashMap<String, String>()
+
+    /** 需要人工验证（滑块/短信），自动恢复到此为止。 */
+    private class NeedVerification(message: String) : Exception(message)
+
+    /** 每隔一段时间用 a1 主动换新令牌，避免"放一夜就掉"。 */
+    private fun startRefreshLoop() {
+        scope.launch {
+            while (isActive) {
+                delay(REFRESH_INTERVAL_MS)
+                val snapshot = clients.entries.toList()
+                for ((uin, client) in snapshot) {
+                    if (!client.isOnline) continue
+                    runCatching {
+                        WtLoginClient(client).renewSession()
+                        saveAndroidSession(uin, client.sessionStore)
+                        ServerLog.i(TAG, "uin=$uin 定时续期成功")
+                    }.onFailure { err ->
+                        ServerLog.w(TAG, "uin=$uin 定时续期失败：${err.message}，转入自动恢复")
+                        scheduleRecovery(uin, "refresh failed: ${err.message}")
+                    }
+                }
+            }
+        }
+    }
+
+    /** 巡检：发现有客户端掉线且没有恢复任务在跑，就拉起来。 */
+    private fun startWatchdog() {
+        scope.launch {
+            while (isActive) {
+                delay(WATCHDOG_INTERVAL_MS)
+                for ((uin, client) in clients.entries.toList()) {
+                    if (!client.isOnline && recoveryJobs[uin]?.isActive != true) {
+                        scheduleRecovery(uin, "watchdog: client offline")
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 自动恢复：a2 重连 → a1 续期，指数退避 2s→60s。
+     * 绝不自动打密码登录（会推高风险且必然卡验证码）。
+     */
+    private fun scheduleRecovery(uin: String, reason: String) {
+        if (recoveryJobs[uin]?.isActive == true) return
+        needVerify.remove(uin)
+        recoveryJobs[uin] = scope.launch {
+            var backoff = 2_000L
+            try {
+                repeat(MAX_RECOVERY_ATTEMPTS) { attempt ->
+                    delay(backoff)
+                    val outcome = runCatching { recoverOnce(uin) }
+                    outcome.onSuccess {
+                        ServerLog.i(TAG, "uin=$uin 自动恢复成功（第 ${attempt + 1} 次尝试，reason=$reason）")
+                        return@launch
+                    }
+                    val err = outcome.exceptionOrNull()
+                    if (err is NeedVerification) {
+                        needVerify[uin] = err.message ?: "需要人工验证"
+                        ServerLog.w(TAG, "uin=$uin 自动恢复停止：${err.message}")
+                        return@launch
+                    }
+                    ServerLog.w(TAG, "uin=$uin 第 ${attempt + 1} 次恢复失败：${err?.message}")
+                    backoff = (backoff * 2).coerceAtMost(MAX_BACKOFF_MS)
+                }
+                ServerLog.w(TAG, "uin=$uin 自动恢复放弃（已尝试 $MAX_RECOVERY_ATTEMPTS 次）")
+            } finally {
+                recoveryJobs.remove(uin)
+            }
+        }
+    }
+
+    private suspend fun recoverOnce(uin: String) {
+        val file = File(sessionDir, "$uin.android.session.json")
+        if (!file.isFile) throw IllegalStateException("会话文件不存在：${file.name}")
+        val store = AndroidSessionStore.fromJson(file.readText(Charsets.UTF_8))
+        val sso = buildSsoClient(uin, store, defaultSignUrl)
+        try {
+            WtLoginClient(sso).recoverSession()
+        } catch (e: Exception) {
+            sso.close()
+            val msg = e.message.orEmpty()
+            if (msg.contains("Captcha") || msg.contains("人工")) {
+                throw NeedVerification("需要人工登录：$msg")
+            }
+            throw e
+        }
+        clients[uin]?.close()
+        clients[uin] = sso
+        saveAndroidSession(uin, store)
+        ledger.upsertAccount(AccountInfo(uin = uin, nickname = uin, enabled = true))
+    }
+
+    /** 当前需要人工验证的账号（供 UI 提示）。 */
+    fun pendingVerifications(): Map<String, String> = needVerify.toMap()
 
     private fun saveAndroidSession(uin: String, store: AndroidSessionStore) {
         sessionDir.mkdirs()
@@ -393,6 +504,10 @@ class AcidifySessionManager(
     companion object {
         private const val TAG = "SSO_MGR"
         private const val REAL_DEVICE_NAME = "24091RPADC"
+        private const val REFRESH_INTERVAL_MS = 5 * 60 * 60 * 1000L   // 5 小时主动续期
+        private const val WATCHDOG_INTERVAL_MS = 2 * 60 * 1000L       // 2 分钟巡检
+        private const val MAX_RECOVERY_ATTEMPTS = 10
+        private const val MAX_BACKOFF_MS = 60_000L
         private val DEVICE_JSON = Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = true }
     }
 }

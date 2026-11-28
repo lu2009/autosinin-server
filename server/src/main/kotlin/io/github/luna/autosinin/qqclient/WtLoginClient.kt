@@ -56,6 +56,34 @@ class WtLoginClient(
         }
     }
 
+    /**
+     * 静默恢复：只用 a2 / a1，不触发账密登录。
+     * 供掉线自愈使用——自动重试绝不能打密码登录（会推高风控，且必然卡在验证码）。
+     */
+    suspend fun recoverSession() {
+        if (store.wloginSigs.a2.isNotEmpty()) {
+            runCatching { online() }.onSuccess {
+                ServerLog.i(TAG, "uin=${store.uin} 用 a2 重连成功")
+                return
+            }.onFailure {
+                ServerLog.w(TAG, "uin=${store.uin} a2 重连失败: ${it.message}")
+            }
+        }
+        if (store.wloginSigs.a1.isNotEmpty() && store.wloginSigs.noPicSig.isNotEmpty()) {
+            try {
+                renewWithA1()
+            } catch (e: Exception) {
+                error("a1 续期失败（${e.message}），需要人工登录")
+            }
+            ServerLog.i(TAG, "uin=${store.uin} 用 a1 续期后重连成功")
+            return
+        }
+        error("无可用的 a1/a2，需要人工登录")
+    }
+
+    /** 主动续期：用 a1 换一套新令牌并重新上线，供定时保鲜使用。 */
+    suspend fun renewSession() = renewWithA1()
+
     private suspend fun renewWithA1() {
         val result = sendWtLogin(0x09) {
             buildQrExchangeTlv(
