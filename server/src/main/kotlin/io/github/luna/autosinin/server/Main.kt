@@ -25,7 +25,8 @@ fun main() {
     val protocolMode = System.getenv("AUTOSININ_PROTOCOL_MODE")?.trim()?.lowercase() ?: "android"
     val gatewayUrl = System.getenv("AUTOSININ_GATEWAY_URL")?.trim().orEmpty()
     val gatewayToken = System.getenv("AUTOSININ_GATEWAY_TOKEN")?.trim()
-    val scheduleMinutes = System.getenv("AUTOSININ_SCHEDULE_INTERVAL_MIN")?.toLongOrNull() ?: 360L
+    val scheduleStart = System.getenv("AUTOSININ_SCHEDULE_START") ?: "09:00"
+    val scheduleEnd = System.getenv("AUTOSININ_SCHEDULE_END") ?: "11:00"
     val scheduleEnabled = System.getenv("AUTOSININ_SCHEDULE_ENABLED")?.toBooleanStrictOrNull() ?: true
 
     val ledger = SqliteAccountLedger(dbPath)
@@ -53,7 +54,8 @@ fun main() {
     val scheduler = TaskScheduler(
         ledger = ledger,
         engine = engine,
-        intervalMinutes = scheduleMinutes,
+        windowStart = scheduleStart,
+        windowEnd = scheduleEnd,
         enabled = scheduleEnabled,
     )
     scheduler.start()

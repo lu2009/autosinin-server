@@ -78,6 +78,12 @@ data class TicketDto(
 )
 
 @Serializable
+data class SchedulerConfigRequest(
+    val windowStart: String? = null,
+    val windowEnd: String? = null,
+)
+
+@Serializable
 data class QrStartRequest(
     val uin: String? = null,
 )
@@ -387,6 +393,21 @@ fun Application.configureAutoSininModule(
             call.respond(scheduler.status())
         }
 
+        post("/api/scheduler/config") {
+            val req = runCatching { call.receive<SchedulerConfigRequest>() }.getOrElse {
+                call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid body"))
+                return@post
+            }
+            val bad = listOfNotNull(req.windowStart, req.windowEnd)
+                .filter { it.isNotBlank() }
+                .firstOrNull { !TIME_PATTERN.matches(it.trim()) }
+            if (bad != null) {
+                call.respond(HttpStatusCode.BadRequest, ErrorResponse("时间格式应为 HH:mm：$bad"))
+                return@post
+            }
+            call.respond(scheduler.setSchedule(req.windowStart, req.windowEnd))
+        }
+
         post("/api/scheduler/run") {
             val force = call.request.queryParameters["force"]?.toBooleanStrictOrNull() ?: false
             val results = scheduler.triggerNow(force = force)
@@ -454,6 +475,8 @@ private val TASK_CATALOG: List<TaskMetaDto> = listOf(
     TaskMetaDto("video_ad", "完成视频任务获得加速时长", "小游戏与广告", 1021),
     TaskMetaDto("add_friend", "加一位好友", "社交关系", 23),
 )
+
+private val TIME_PATTERN = Regex("^([01]?\\d|2[0-3]):[0-5]\\d$")
 
 private val DASHBOARD_HTML = """
 <!doctype html>
